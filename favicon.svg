@@ -1,5 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="#0b1120"/>
-  <path d="M16 5L9 22h5l-1.5 5L22 11h-5.5z" fill="#00d4aa"/>
-  <circle cx="16" cy="16" r="14" fill="none" stroke="#00d4aa" stroke-width="1" opacity="0.2"/>
+  <!-- Placa azul de autovía con filete blanco; flecha: Phosphor navigation-arrow (MIT) -->
+  <rect width="32" height="32" rx="7" fill="#1D4F9C"/>
+  <rect x="2" y="2" width="28" height="28" rx="5" fill="none" stroke="#FFFFFF" stroke-width="1.5"/>
+  <g transform="translate(7 7) scale(0.07)">
+    <path fill="#FFFFFF" d="M248,121.58a15.76,15.76,0,0,1-11.29,15l-.2.06-78,21.84-21.84,78-.06.2a15.77,15.77,0,0,1-15,11.29h-.3a15.77,15.77,0,0,1-15.070-10.67L41,61.41a1,1,0,0,1-.05-.16A16,16,0,0,1,61.25,40.9l.16.05,175.92,65.26A15.78,15.78,0,0,1,248,121.58Z"/>
+  </g>
 </svg>

@@ -2,44 +2,46 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="description" content="Rumbo: rutas en coche por España con el tiempo a lo largo del trayecto, avisos de tráfico y precios de gasolineras.">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="theme-color" content="#0b1120">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="theme-color" content="#FBFBFC" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#15191F" media="(prefers-color-scheme: dark)">
     <title>Rumbo</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
 
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="preload" href="assets/fonts/overpass-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="stylesheet" href="lib/leaflet/leaflet.css">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+    <?php include __DIR__ . '/assets/icons.svg'; ?>
 
-    <!-- ============ MAPA (fondo completo) ============ -->
-    <div id="map"></div>
+    <!-- Mapa a pantalla completa -->
+    <div id="map" role="region" aria-label="Mapa"></div>
 
-    <!-- ============ TOP BAR (solo en modo ruta) ============ -->
-    <div id="topBar" class="top-bar hidden">
-        <button id="exitRoute" class="top-bar-btn" title="Salir de ruta">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    <!-- Barra superior (solo en modo ruta) -->
+    <header id="topBar" class="top-bar hidden">
+        <button id="exitRoute" class="icon-btn" type="button" aria-label="Salir de la ruta">
+            <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>
         </button>
         <div class="top-bar-info">
-            <span class="tb-eta" id="tbEta">--:--</span>
-            <span class="tb-detail" id="tbDetail">-- km · -- min</span>
+            <span class="tb-eta" id="tbEta" aria-label="Hora de llegada">--:--</span>
+            <span class="tb-detail" id="tbDetail">-- km, -- min</span>
         </div>
         <div class="top-bar-weather" id="tbWeather">
-            <span class="tb-weather-icon">☀️</span>
-            <span class="tb-weather-temp">--°</span>
+            <svg class="icon" aria-hidden="true"><use href="#i-cloud-sun"/></svg>
+            <span>--°</span>
         </div>
-    </div>
+    </header>
 
-    <!-- ============ SEÑAL DE NAVEGACIÓN ============ -->
-    <div id="navSign" class="nav-sign hidden">
-        <div class="nav-sign-inner">
+    <!-- Cartel de orientación -->
+    <div id="navSign" class="nav-sign hidden" aria-live="polite">
+        <div class="nav-sign-inner sign-blue">
             <div class="nav-arrow"></div>
             <div class="nav-info">
-                <div class="nav-road">--</div>
+                <div class="nav-road"></div>
                 <div class="nav-instruction">--</div>
             </div>
             <div class="nav-distance">
@@ -49,195 +51,183 @@
         </div>
     </div>
 
-    <!-- ============ 3 BOTONES FLOTANTES: CENTRAR + GASOLINERAS + REPORTAR ============ -->
+    <!-- Botones flotantes -->
     <div class="map-fabs">
-        <button id="centerBtn" class="fab fab-blue active" title="Centrar en mi ubicación">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M12 2v4m0 12v4M2 12h4m12 0h4"/>
-            </svg>
+        <button id="centerBtn" class="fab" type="button" aria-pressed="true" aria-label="Seguir mi ubicación">
+            <svg class="icon icon-lg" aria-hidden="true"><use href="#i-gps-fix"/></svg>
         </button>
-        <button id="fuelBtn" class="fab fab-green" title="Gasolineras">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h8a2 2 0 002-2V4a2 2 0 00-2-2z"/>
-                <path d="M14 9h1a2 2 0 012 2v2a1 1 0 002 0V9l-3-3"/>
-                <path d="M8 13h4"/>
-            </svg>
+        <button id="fuelBtn" class="fab" type="button" aria-pressed="false" aria-label="Mostrar gasolineras">
+            <svg class="icon icon-lg" aria-hidden="true"><use href="#i-gas-pump"/></svg>
         </button>
-        <button id="reportBtn" class="fab fab-red" title="Reportar incidencia">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="12" y1="8" x2="12" y2="12"/>
-                <line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
+        <button id="reportBtn" class="fab fab-primary" type="button" aria-label="Reportar incidencia">
+            <svg class="icon icon-lg" aria-hidden="true"><use href="#i-warning"/></svg>
         </button>
     </div>
 
     <!-- Velocímetro -->
-    <div id="speedometer" class="speedometer hidden">
+    <div id="speedometer" class="speedometer hidden" aria-hidden="true">
         <span class="speed-value" id="speedValue">0</span>
         <span class="speed-unit">km/h</span>
     </div>
 
+    <!-- Panel inferior -->
+    <main id="bottomSheet" class="bottom-sheet">
+        <button class="sheet-handle" id="sheetHandle" type="button" aria-expanded="true" aria-controls="bottomSheet" aria-label="Plegar panel">
+            <span class="handle-bar"></span>
+        </button>
 
-
-    <!-- ============ BOTTOM SHEET ============ -->
-    <div id="bottomSheet" class="bottom-sheet">
-        <!-- Handle -->
-        <div class="sheet-handle" id="sheetHandle">
-            <div class="handle-bar"></div>
-        </div>
-
-        <!-- Panel de búsqueda (estado inicial) -->
-        <div id="searchPanel" class="sheet-section">
+        <!-- Búsqueda -->
+        <section id="searchPanel" class="sheet-section" aria-labelledby="appTitle">
             <div class="sheet-header">
-                <h1 class="app-title">Rumbo</h1>
-                <p class="app-sub">Clima · Avisos · Rutas por España</p>
+                <img class="app-mark" src="favicon.svg" alt="" width="32" height="32">
+                <h1 class="app-title" id="appTitle">Rumbo</h1>
             </div>
 
             <div class="search-inputs">
                 <div class="search-row">
-                    <div class="dot dot-green"></div>
-                    <input type="text" id="origin" class="search-input" placeholder="Tu ubicación" autocomplete="off">
-                    <button id="myLocationBtn" class="input-action-btn" title="Mi ubicación">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></svg>
-                    </button>
-                    <div id="origin-suggestions" class="suggestions"></div>
+                    <label class="field-label" for="origin">Origen</label>
+                    <div class="input-wrap">
+                        <svg class="icon" aria-hidden="true"><use href="#i-navigation-arrow"/></svg>
+                        <input type="text" id="origin" class="search-input has-action" placeholder="Tu ubicación o una dirección" autocomplete="off" aria-autocomplete="list" aria-controls="origin-suggestions">
+                        <button id="myLocationBtn" class="input-action-btn" type="button" aria-label="Usar mi ubicación">
+                            <svg class="icon" aria-hidden="true"><use href="#i-crosshair"/></svg>
+                        </button>
+                    </div>
+                    <div id="origin-suggestions" class="suggestions" role="listbox" aria-label="Sugerencias de origen"></div>
                 </div>
                 <div class="search-row">
-                    <div class="dot dot-red"></div>
-                    <input type="text" id="destination" class="search-input" placeholder="¿A dónde vas?" autocomplete="off">
-                    <div id="destination-suggestions" class="suggestions"></div>
+                    <label class="field-label" for="destination">Destino</label>
+                    <div class="input-wrap">
+                        <svg class="icon" aria-hidden="true"><use href="#i-map-pin"/></svg>
+                        <input type="text" id="destination" class="search-input" placeholder="Ciudad, calle o lugar" autocomplete="off" aria-autocomplete="list" aria-controls="destination-suggestions">
+                    </div>
+                    <div id="destination-suggestions" class="suggestions" role="listbox" aria-label="Sugerencias de destino"></div>
                 </div>
             </div>
 
-            <div class="pref-row">
-                <button class="pref-chip active" data-pref="fastest">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-                    Autovía
-                </button>
-                <button class="pref-chip" data-pref="shortest">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-                    Carretera
-                </button>
+            <div class="pref-group">
+                <span class="field-label" id="prefLabel">Tipo de ruta</span>
+                <div class="segmented" role="group" aria-labelledby="prefLabel">
+                    <button class="segment" type="button" data-pref="fastest" aria-pressed="true">
+                        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-lightning"/></svg>
+                        Autovía
+                    </button>
+                    <button class="segment" type="button" data-pref="shortest" aria-pressed="false">
+                        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-path"/></svg>
+                        Carretera
+                    </button>
+                </div>
             </div>
 
-            <div id="fuelPrefs" class="pref-row fuel-prefs hidden">
-                <button class="pref-chip active" data-fuel="gasolina">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></svg>
-                    Gasolina
-                </button>
-                <button class="pref-chip" data-fuel="diesel">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h8a2 2 0 002-2V4a2 2 0 00-2-2z"/><path d="M8 13h4"/></svg>
-                    Diésel
-                </button>
+            <div id="fuelPrefs" class="pref-group hidden">
+                <span class="field-label" id="fuelLabel">Combustible</span>
+                <div class="segmented" role="group" aria-labelledby="fuelLabel">
+                    <button class="segment" type="button" data-fuel="gasolina" aria-pressed="true">Gasolina</button>
+                    <button class="segment" type="button" data-fuel="diesel" aria-pressed="false">Diésel</button>
+                </div>
             </div>
 
-            <button id="searchBtn" class="primary-btn">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-                Buscar Ruta
+            <button id="searchBtn" class="primary-btn" type="button">
+                <svg class="icon" aria-hidden="true"><use href="#i-magnifying-glass"/></svg>
+                <span class="btn-label">Buscar ruta</span>
             </button>
 
-            <!-- Loading / Error -->
-            <div id="loading" class="loading-bar hidden"><div class="loading-bar-inner"></div></div>
-            <div id="error" class="inline-error hidden"></div>
-        </div>
+            <div id="loading" class="hidden" aria-hidden="true"></div>
+            <div id="error" class="inline-error hidden" role="alert"></div>
+        </section>
 
-        <!-- Panel de resultados (después de buscar) -->
-        <div id="resultsPanel" class="sheet-section hidden">
-            <!-- Stats -->
-            <div class="result-stats">
-                <div class="rstat">
-                    <span class="rstat-val" id="statDistance">--</span>
-                    <span class="rstat-label">km</span>
+        <!-- Resultados -->
+        <section id="resultsPanel" class="sheet-section hidden" aria-label="Resumen de la ruta">
+            <div class="trip-summary">
+                <div class="trip-main">
+                    <span class="trip-figure"><span id="statDistance">--</span><span class="trip-unit">km</span></span>
+                    <span class="trip-figure"><span id="statDuration">--</span><span class="trip-unit">min</span></span>
                 </div>
-                <div class="rstat">
-                    <span class="rstat-val" id="statDuration">--</span>
-                    <span class="rstat-label">min</span>
-                </div>
-                <div class="rstat">
-                    <span class="rstat-val" id="statTemp">--</span>
-                    <span class="rstat-label">°C</span>
-                </div>
-                <div class="rstat">
-                    <span class="rstat-val" id="statWarnings">--</span>
-                    <span class="rstat-label">avisos</span>
+                <div class="trip-meta">
+                    <span class="trip-chip" title="Temperatura media">
+                        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-thermometer"/></svg>
+                        <span><span class="num" id="statTemp">--</span>°</span>
+                    </span>
+                    <span class="trip-chip" title="Avisos en la ruta">
+                        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-warning"/></svg>
+                        <span class="num" id="statWarnings">--</span>
+                    </span>
                 </div>
             </div>
 
-            <!-- Clima overview -->
             <div class="weather-strip" id="weatherStrip"></div>
 
-            <!-- Tabs -->
-            <div class="tab-bar">
-                <button class="tab active" data-tab="tab-warnings">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <div class="tab-bar" role="tablist" aria-label="Información de la ruta">
+                <button class="tab active" type="button" role="tab" id="tabbtn-warnings" data-tab="tab-warnings" aria-controls="tab-warnings" aria-selected="true">
+                    <svg class="icon icon-sm" aria-hidden="true"><use href="#i-warning"/></svg>
                     Avisos
                 </button>
-                <button class="tab" data-tab="tab-weather">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                <button class="tab" type="button" role="tab" id="tabbtn-weather" data-tab="tab-weather" aria-controls="tab-weather" aria-selected="false" tabindex="-1">
+                    <svg class="icon icon-sm" aria-hidden="true"><use href="#i-cloud-sun"/></svg>
                     Clima
                 </button>
-                <button class="tab" data-tab="tab-detail">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                <button class="tab" type="button" role="tab" id="tabbtn-detail" data-tab="tab-detail" aria-controls="tab-detail" aria-selected="false" tabindex="-1">
+                    <svg class="icon icon-sm" aria-hidden="true"><use href="#i-list-bullets"/></svg>
                     Detalle
                 </button>
             </div>
 
             <div class="tab-content">
-                <!-- Avisos -->
-                <div id="tab-warnings" class="tab-pane active">
-                    <div id="warningsList"></div>
+                <div id="tab-warnings" class="tab-pane active" role="tabpanel" aria-labelledby="tabbtn-warnings">
+                    <div id="warningsList" class="warning-list"></div>
                 </div>
-                <!-- Clima timeline -->
-                <div id="tab-weather" class="tab-pane">
+                <div id="tab-weather" class="tab-pane" role="tabpanel" aria-labelledby="tabbtn-weather">
                     <div class="weather-timeline-scroll" id="timelineScroll"></div>
                 </div>
-                <!-- Detalle -->
-                <div id="tab-detail" class="tab-pane">
-                    <div id="weatherCards"></div>
+                <div id="tab-detail" class="tab-pane" role="tabpanel" aria-labelledby="tabbtn-detail">
+                    <div id="weatherCards" class="weather-rows"></div>
                 </div>
             </div>
 
-            <button id="newSearchBtn" class="secondary-btn">
-                Nueva búsqueda
-            </button>
-        </div>
-    </div>
+            <button id="newSearchBtn" class="secondary-btn" type="button">Nueva búsqueda</button>
+        </section>
+    </main>
 
-    <!-- ============ MODAL REPORTAR ============ -->
+    <!-- Diálogo de reporte -->
     <div id="reportModal" class="modal hidden">
         <div class="modal-backdrop"></div>
-        <div class="modal-sheet">
-            <div class="handle-bar" style="margin: 0 auto 16px;"></div>
-            <h3 class="modal-title">Reportar Incidencia</h3>
-            <p class="modal-sub">Tu reporte ayuda a otros conductores</p>
+        <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="reportTitle" aria-describedby="reportSub">
+            <div class="handle-bar"></div>
+            <h2 class="modal-title" id="reportTitle">Reportar incidencia</h2>
+            <p class="modal-sub" id="reportSub">Se publica en tu posición actual y la ven otros conductores durante 4 horas.</p>
 
-            <div class="report-grid" id="reportTypes">
-                <button class="rpt-btn" data-type="policia"><span>👮</span>Policía</button>
-                <button class="rpt-btn" data-type="accidente"><span>💥</span>Accidente</button>
-                <button class="rpt-btn" data-type="peligro"><span>⚠️</span>Peligro</button>
-                <button class="rpt-btn" data-type="obras"><span>🚧</span>Obras</button>
-                <button class="rpt-btn" data-type="trafico"><span>🔴</span>Atasco</button>
-                <button class="rpt-btn" data-type="vehiculo_parado"><span>🚙</span>Veh. parado</button>
-                <button class="rpt-btn" data-type="radar"><span>📸</span>Radar</button>
-                <button class="rpt-btn" data-type="nieve"><span>❄️</span>Nieve</button>
-                <button class="rpt-btn" data-type="viento"><span>💨</span>Viento</button>
-                <button class="rpt-btn" data-type="animales"><span>🐗</span>Animales</button>
-                <button class="rpt-btn" data-type="peaton"><span>🚶</span>Peatón</button>
-                <button class="rpt-btn" data-type="inundacion"><span>🌊</span>Inundación</button>
+            <div class="report-grid" id="reportTypes" role="group" aria-label="Tipo de incidencia">
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="policia"><svg class="icon" aria-hidden="true"><use href="#i-police-car"/></svg>Policía</button>
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="accidente"><svg class="icon" aria-hidden="true"><use href="#i-warning-octagon"/></svg>Accidente</button>
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="peligro"><svg class="icon" aria-hidden="true"><use href="#i-warning"/></svg>Peligro</button>
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="obras"><svg class="icon" aria-hidden="true"><use href="#i-traffic-cone"/></svg>Obras</button>
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="trafico"><svg class="icon" aria-hidden="true"><use href="#i-traffic-signal"/></svg>Atasco</button>
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="vehiculo_parado"><svg class="icon" aria-hidden="true"><use href="#i-car"/></svg>Vehículo parado</button>
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="radar"><svg class="icon" aria-hidden="true"><use href="#i-camera"/></svg>Radar</button>
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="nieve"><svg class="icon" aria-hidden="true"><use href="#i-snowflake"/></svg>Nieve</button>
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="viento"><svg class="icon" aria-hidden="true"><use href="#i-wind"/></svg>Viento</button>
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="animales"><svg class="icon" aria-hidden="true"><use href="#i-paw-print"/></svg>Animales</button>
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="peaton"><svg class="icon" aria-hidden="true"><use href="#i-person-simple-walk"/></svg>Peatón</button>
+                <button class="rpt-btn" type="button" aria-pressed="false" data-type="inundacion"><svg class="icon" aria-hidden="true"><use href="#i-waves"/></svg>Inundación</button>
             </div>
 
-            <input type="text" id="reportRoad" class="modal-input" placeholder="Carretera (opcional, ej: A-42)">
-            <input type="text" id="reportComment" class="modal-input" placeholder="Comentario (opcional)">
+            <div class="modal-field">
+                <label class="field-label" for="reportRoad">Carretera (opcional)</label>
+                <input type="text" id="reportRoad" class="modal-input" placeholder="Por ejemplo, A-42" maxlength="20" autocomplete="off">
+            </div>
+            <div class="modal-field">
+                <label class="field-label" for="reportComment">Comentario (opcional)</label>
+                <input type="text" id="reportComment" class="modal-input" placeholder="Qué está pasando" maxlength="200" autocomplete="off">
+            </div>
 
-            <button id="submitReport" class="primary-btn" disabled>Enviar Reporte</button>
-
-            <button id="closeReportModal" class="text-btn" style="margin-top: 8px;">Cancelar</button>
+            <button id="submitReport" class="primary-btn" type="button" disabled>Enviar reporte</button>
+            <button id="closeReportModal" class="text-btn" type="button">Cancelar</button>
         </div>
     </div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+    <script src="lib/leaflet/leaflet.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

@@ -1,10 +1,11 @@
 /**
- * Rumbo — App (mobile-first, Waze-style)
+ * Rumbo - app (mobile-first). Sistema de diseño en DESIGN.md
  */
 
-let map, routeLayer, weatherLayer, warningsLayer;
+let map, tileLayer, routeLayer, weatherLayer, warningsLayer;
 let nearbyLayer, fuelLayer;
 let gpsMarker, originMarker, destMarker;
+let routeLines = [];
 let debounceTimers = {};
 let watchId = null;
 let isTracking = false;
@@ -16,9 +17,125 @@ let selectedReportType = null;
 let routeStartTime = null;
 let routeDurationMin = 0;
 let routeSteps = [];
+let etaTimer = null;
+let inRouteMode = false;
 let fuelType = 'gasolina';
 let fuelData = [];
 let lastNearbyLat = null, lastNearbyLon = null;
+let toastTimer = null;
+let errorTimer = null;
+
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+// Teselas de CARTO (basadas en OSM). Los servidores de tile.openstreetmap.org
+// bloquean apps que no cumplen su política de uso.
+const TILES = {
+    light: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+};
+const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
+
+// Tipo de aviso → icono (Phosphor)
+const WARNING_ICONS = {
+    policia: 'police-car',
+    accidente: 'warning-octagon',
+    peligro: 'warning',
+    obras: 'traffic-cone',
+    trafico: 'traffic-signal',
+    vehiculo_parado: 'car',
+    radar: 'camera',
+    nieve: 'snowflake',
+    viento: 'wind',
+    inundacion: 'waves',
+    animales: 'paw-print',
+    corte: 'prohibit',
+    desprendimiento: 'mountains',
+    peaton: 'person-simple-walk',
+    bicicleta: 'bicycle',
+    cerrada: 'lock'
+};
+
+// ============================================
+// HELPERS
+// ============================================
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function icon(name, cls = '') {
+    return `<svg class="icon ${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+}
+
+function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function sevClass(severity) {
+    const s = String(severity || '').toLowerCase();
+    if (s === 'danger' || s === 'high') return 'sev-danger';
+    if (s === 'warning' || s === 'medium') return 'sev-warning';
+    if (s === 'good') return 'sev-good';
+    return 'sev-caution';
+}
+
+function warningIcon(type) {
+    return WARNING_ICONS[type] || 'warning-circle';
+}
+
+function weatherIcon(code) {
+    const c = Number(code);
+    if (c === 0) return 'sun';
+    if (c <= 2) return 'cloud-sun';
+    if (c === 3) return 'cloud';
+    if (c <= 48) return 'cloud-fog';
+    if (c <= 67) return 'cloud-rain';
+    if (c <= 77) return 'cloud-snow';
+    if (c <= 82) return 'cloud-rain';
+    if (c <= 86) return 'cloud-snow';
+    return 'cloud-lightning';
+}
+
+/** Clase de placa según la red a la que pertenece la carretera */
+function plateClass(ref) {
+    const r = String(ref || '').toUpperCase().replace(/\s+/g, '');
+    if (/^E-?\d/.test(r)) return 'plate-green';
+    if (/^(AP|A|R)-?\d/.test(r) || /^M-?(30|40|45|50)$/.test(r)) return 'plate-blue';
+    if (/^N-?[\dIVX]/.test(r)) return 'plate-red';
+    if (/^[A-Z]{1,3}-?\d/.test(r)) return 'plate-orange';
+    return 'plate-plain';
+}
+
+function roadPlate(ref) {
+    const first = String(ref || '').split(/[;,]/)[0].trim();
+    if (!first) return '';
+    return `<span class="road-plate ${plateClass(first)}">${escapeHtml(first)}</span>`;
+}
+
+function formatTemp(t) {
+    return t === null || t === undefined ? '--' : Math.round(t);
+}
+
+function formatDuration(min) {
+    const m = Math.round(min);
+    if (m < 60) return `${m} min`;
+    return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
+}
+
+function setPressed(buttons, active) {
+    buttons.forEach(b => b.setAttribute('aria-pressed', b === active ? 'true' : 'false'));
+}
+
+function stagger(container) {
+    [...container.children].forEach((el, i) => el.style.setProperty('--i', Math.min(i, 12)));
+    container.classList.remove('stagger');
+    void container.offsetWidth;
+    container.classList.add('stagger');
+}
 
 // ============================================
 // INIT
@@ -26,6 +143,7 @@ let lastNearbyLat = null, lastNearbyLon = null;
 document.addEventListener('DOMContentLoaded', () => {
     initMap();
     initEvents();
+    initSheet();
     initReportModal();
     initTabs();
     startGPSTracking();
@@ -34,11 +152,21 @@ document.addEventListener('DOMContentLoaded', () => {
 function initMap() {
     map = L.map('map', {
         center: [40.0, -3.7], zoom: 6,
-        zoomControl: true, attributionControl: true
+        zoomControl: false, attributionControl: true
     });
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OSM', maxZoom: 19
+    L.control.zoom({ position: 'bottomright', zoomInTitle: 'Acercar', zoomOutTitle: 'Alejar' }).addTo(map);
+
+    tileLayer = L.tileLayer(darkQuery.matches ? TILES.dark : TILES.light, {
+        attribution: TILE_ATTRIBUTION,
+        subdomains: 'abcd',
+        maxZoom: 20
     }).addTo(map);
+
+    darkQuery.addEventListener('change', e => {
+        tileLayer.setUrl(e.matches ? TILES.dark : TILES.light);
+        const color = cssVar('--accent');
+        routeLines.forEach(line => line.setStyle({ color }));
+    });
 
     routeLayer    = L.layerGroup().addTo(map);
     weatherLayer  = L.layerGroup().addTo(map);
@@ -46,13 +174,24 @@ function initMap() {
     nearbyLayer   = L.layerGroup().addTo(map);
     fuelLayer     = L.layerGroup().addTo(map);
 
-    // Arrastrar el mapa desactiva auto-centrar
+    // Arrastrar el mapa desactiva el seguimiento
     map.on('dragstart', () => {
         if (followMode) {
             followMode = false;
-            document.getElementById('centerBtn').classList.remove('active');
+            document.getElementById('centerBtn').setAttribute('aria-pressed', 'false');
         }
     });
+
+    // Votación en popups de avisos de la comunidad
+    map.on('popupopen', e => {
+        const el = e.popup.getElement();
+        if (!el) return;
+        el.querySelectorAll('[data-vote]').forEach(btn => {
+            btn.addEventListener('click', () => voteWarning(btn.dataset.report, btn.dataset.vote));
+        });
+    });
+
+    window.addEventListener('resize', () => updateFabsPosition(inRouteMode));
 }
 
 function initEvents() {
@@ -61,83 +200,131 @@ function initEvents() {
 
     ['origin', 'destination'].forEach(id => {
         const el = document.getElementById(id);
-        el.addEventListener('keydown', e => { if (e.key === 'Enter') searchRoute(); });
+        el.addEventListener('keydown', e => {
+            if (e.key === 'Enter') searchRoute();
+            if (e.key === 'Escape') closeSuggestions();
+        });
         el.addEventListener('input', () => {
             delete el.dataset.lat;
             delete el.dataset.lon;
             delete el.dataset.hasHouse;
-            const dot = el.closest('.search-row')?.querySelector('.dot');
-            if (dot) { dot.style.background = ''; dot.style.boxShadow = ''; }
+            el.closest('.search-row')?.classList.remove('is-set');
             autocomplete(id);
         });
     });
 
     document.addEventListener('click', e => {
-        if (!e.target.closest('.search-row') && !e.target.closest('.suggestions'))
-            document.querySelectorAll('.suggestions').forEach(s => s.classList.remove('active'));
+        if (!e.target.closest('.search-row')) closeSuggestions();
     });
 
     document.getElementById('myLocationBtn').addEventListener('click', () => {
+        const input = document.getElementById('origin');
         if (currentLat && currentLon) {
-            const input = document.getElementById('origin');
-            input.value = `${currentLat.toFixed(4)}, ${currentLon.toFixed(4)}`;
+            input.value = 'Mi ubicación';
             input.dataset.lat = currentLat;
             input.dataset.lon = currentLon;
+            input.dataset.hasHouse = '1';
+            input.closest('.search-row')?.classList.add('is-set');
+            closeSuggestions();
+        } else {
+            showError('Aún no tenemos tu ubicación. Permite el acceso a la ubicación o escribe una dirección.', true);
         }
     });
 
-    document.querySelectorAll('[data-pref]').forEach(btn => {
+    const prefButtons = document.querySelectorAll('[data-pref]');
+    prefButtons.forEach(btn => {
         btn.addEventListener('click', () => {
-            document.querySelectorAll('[data-pref]').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
+            setPressed(prefButtons, btn);
             routePreference = btn.dataset.pref;
         });
     });
 
     document.getElementById('centerBtn').addEventListener('click', () => {
         followMode = true;
-        const btn = document.getElementById('centerBtn');
-        btn.classList.add('active');
+        document.getElementById('centerBtn').setAttribute('aria-pressed', 'true');
         if (currentLat && currentLon) {
             map.setView([currentLat, currentLon], 15, { animate: true });
+        } else {
+            showToast('Esperando señal de ubicación', 'gps-fix');
         }
     });
 
-    document.getElementById('exitRoute').addEventListener('click', () => {
-        exitRouteMode();
-    });
+    document.getElementById('exitRoute').addEventListener('click', exitRouteMode);
 
     document.getElementById('fuelBtn').addEventListener('click', () => {
         const btn = document.getElementById('fuelBtn');
-        const prefs = document.getElementById('fuelPrefs');
-        const active = btn.classList.toggle('active');
-        prefs.classList.toggle('hidden', !active);
+        const active = btn.getAttribute('aria-pressed') !== 'true';
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        btn.setAttribute('aria-label', active ? 'Ocultar gasolineras' : 'Mostrar gasolineras');
+        document.getElementById('fuelPrefs').classList.toggle('hidden', !active);
         if (active) {
             fuelLayer.addTo(map);
             if (fuelData.length) drawFuelMarkers(fuelData);
             else if (currentLat && currentLon) loadNearby(currentLat, currentLon);
+            else showToast('Las gasolineras aparecerán cuando tengamos tu ubicación', 'gas-pump');
         } else {
             fuelLayer.remove();
         }
     });
 
-    document.querySelectorAll('[data-fuel]').forEach(btn => {
+    const fuelButtons = document.querySelectorAll('[data-fuel]');
+    fuelButtons.forEach(btn => {
         btn.addEventListener('click', () => {
-            document.querySelectorAll('[data-fuel]').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
+            setPressed(fuelButtons, btn);
             fuelType = btn.dataset.fuel;
             if (fuelData.length) drawFuelMarkers(fuelData);
         });
     });
 }
 
+function isFuelActive() {
+    return document.getElementById('fuelBtn').getAttribute('aria-pressed') === 'true';
+}
+
+function initSheet() {
+    const sheet = document.getElementById('bottomSheet');
+    const handle = document.getElementById('sheetHandle');
+    handle.addEventListener('click', () => {
+        const collapsed = sheet.classList.toggle('is-collapsed');
+        handle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        handle.setAttribute('aria-label', collapsed ? 'Desplegar panel' : 'Plegar panel');
+    });
+}
+
+function collapseSheet() {
+    const sheet = document.getElementById('bottomSheet');
+    const handle = document.getElementById('sheetHandle');
+    sheet.classList.add('is-collapsed');
+    handle.setAttribute('aria-expanded', 'false');
+    handle.setAttribute('aria-label', 'Desplegar panel');
+}
+
+function expandSheet() {
+    const sheet = document.getElementById('bottomSheet');
+    const handle = document.getElementById('sheetHandle');
+    sheet.classList.remove('is-collapsed');
+    handle.setAttribute('aria-expanded', 'true');
+    handle.setAttribute('aria-label', 'Plegar panel');
+}
+
 function initTabs() {
-    document.querySelectorAll('.tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-            tab.classList.add('active');
-            document.getElementById(tab.dataset.tab).classList.add('active');
+    const tabs = [...document.querySelectorAll('.tab')];
+    const activate = tab => {
+        tabs.forEach(t => {
+            const on = t === tab;
+            t.classList.toggle('active', on);
+            t.setAttribute('aria-selected', on ? 'true' : 'false');
+            t.tabIndex = on ? 0 : -1;
+            document.getElementById(t.dataset.tab).classList.toggle('active', on);
+        });
+    };
+    tabs.forEach((tab, i) => {
+        tab.addEventListener('click', () => activate(tab));
+        tab.addEventListener('keydown', e => {
+            if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+            const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+            activate(next);
+            next.focus();
         });
     });
 }
@@ -150,7 +337,7 @@ function startGPSTracking() {
     if (watchId !== null) return;
 
     isTracking = true;
-    document.getElementById('centerBtn').classList.add('active');
+    document.getElementById('centerBtn').setAttribute('aria-pressed', 'true');
     document.getElementById('speedometer').classList.remove('hidden');
 
     // Ubicación rápida (WiFi/IP) para centrar el mapa al instante
@@ -161,7 +348,7 @@ function startGPSTracking() {
                 currentLat = latitude;
                 currentLon = longitude;
                 firstFix = false;
-                updateGpsMarker(latitude, longitude, null);
+                updateGpsMarker(latitude, longitude);
                 map.flyTo([latitude, longitude], 15, { duration: 1.2 });
                 loadNearby(latitude, longitude);
             }
@@ -170,19 +357,16 @@ function startGPSTracking() {
         { enableHighAccuracy: false, timeout: 5000, maximumAge: 30000 }
     );
 
-    // GPS de alta precisión para tracking continuo
+    // GPS de alta precisión para seguimiento continuo
     watchId = navigator.geolocation.watchPosition(
         pos => {
-            const { latitude, longitude, speed, heading } = pos.coords;
+            const { latitude, longitude, speed } = pos.coords;
             currentLat = latitude;
             currentLon = longitude;
 
-            updateGpsMarker(latitude, longitude, heading);
+            updateGpsMarker(latitude, longitude);
+            updateSpeedometer(speed ? Math.round(speed * 3.6) : 0);
 
-            const kmh = speed ? Math.round(speed * 3.6) : 0;
-            updateSpeedometer(kmh);
-
-            // Actualizar señal de navegación
             if (routeSteps.length) updateNavSign(latitude, longitude);
 
             if (firstFix) {
@@ -193,7 +377,7 @@ function startGPSTracking() {
                 map.setView([latitude, longitude], map.getZoom(), { animate: true, duration: 0.5 });
             }
 
-            // Recargar avisos/gasolineras si te mueves > 3km
+            // Recargar avisos y gasolineras al moverse más de 3 km
             if (!firstFix && lastNearbyLat !== null) {
                 const moved = haversineKm(lastNearbyLat, lastNearbyLon, latitude, longitude);
                 if (moved > 3) loadNearby(latitude, longitude);
@@ -201,21 +385,24 @@ function startGPSTracking() {
         },
         err => {
             console.warn('GPS:', err.message);
+            if (err.code === err.PERMISSION_DENIED) {
+                document.getElementById('speedometer').classList.add('hidden');
+            }
         },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 2000 }
     );
 }
 
-function updateGpsMarker(lat, lon, heading) {
+function updateGpsMarker(lat, lon) {
     if (gpsMarker) {
         gpsMarker.setLatLng([lat, lon]);
     } else {
-        const icon = L.divIcon({
+        const markerIcon = L.divIcon({
             className: '',
-            html: `<div class="gps-dot ${isTracking ? 'tracking' : ''}"></div>`,
-            iconSize: [22, 22], iconAnchor: [11, 11]
+            html: '<div class="gps-dot"></div>',
+            iconSize: [20, 20], iconAnchor: [10, 10]
         });
-        gpsMarker = L.marker([lat, lon], { icon, zIndex: 9999 }).addTo(map);
+        gpsMarker = L.marker([lat, lon], { icon: markerIcon, zIndexOffset: 1000, keyboard: false }).addTo(map);
     }
 }
 
@@ -229,7 +416,7 @@ function updateSpeedometer(kmh) {
 }
 
 // ============================================
-// NEARBY (avisos + gasolineras en 15km)
+// CERCANOS (avisos + gasolineras en 15 km)
 // ============================================
 async function loadNearby(lat, lon) {
     lastNearbyLat = lat;
@@ -240,100 +427,96 @@ async function loadNearby(lat, lon) {
     const south = lat - dLat, north = lat + dLat;
     const west  = lon - dLon, east  = lon + dLon;
 
-    // Avisos cercanos
     try {
         const wRes = await fetch(`api/warnings.php?south=${south.toFixed(4)}&west=${west.toFixed(4)}&north=${north.toFixed(4)}&east=${east.toFixed(4)}`);
         let warnings = await wRes.json();
         if (!Array.isArray(warnings)) warnings = [];
         const filtered = warnings.filter(w => w.lat && w.lon && haversineKm(lat, lon, w.lat, w.lon) <= 15);
-        drawNearbyWarnings(filtered);
+        drawWarningMarkers(nearbyLayer, filtered);
     } catch (e) {
         console.warn('Avisos cercanos:', e);
     }
 
-    // Gasolineras
     try {
         const fRes = await fetch(`api/fuel.php?lat=${lat}&lon=${lon}&radius=15`);
         let stations = await fRes.json();
         if (!Array.isArray(stations)) stations = [];
         fuelData = stations;
-        if (document.getElementById('fuelBtn').classList.contains('active')) drawFuelMarkers(stations);
+        if (isFuelActive()) {
+            drawFuelMarkers(stations);
+            if (!stations.length) showToast('No hay gasolineras con precio en 15 km', 'gas-pump');
+        }
     } catch (e) {
         console.warn('Gasolineras:', e);
     }
 }
 
-function drawNearbyWarnings(list) {
-    nearbyLayer.clearLayers();
+function drawWarningMarkers(layer, list) {
+    layer.clearLayers();
     list.forEach(w => {
         if (!w.lat || !w.lon) return;
-        const icon = L.divIcon({
+        const markerIcon = L.divIcon({
             className: '',
-            html: `<div class="waze-marker ${w.icon}">${w.emoji || '⚠️'}</div>`,
-            iconSize: [40, 48], iconAnchor: [20, 40]
+            html: `<div class="mk-warning ${sevClass(w.severity)}">${icon(warningIcon(w.type))}</div>`,
+            iconSize: [34, 34], iconAnchor: [17, 17], popupAnchor: [0, -18]
         });
-        L.marker([w.lat, w.lon], { icon }).addTo(nearbyLayer)
-            .bindPopup(buildWarningPopup(w), { maxWidth: 280 });
+        L.marker([w.lat, w.lon], { icon: markerIcon, title: w.title || 'Aviso' }).addTo(layer)
+            .bindPopup(buildWarningPopup(w), { maxWidth: 300 });
     });
 }
 
 function drawFuelMarkers(stations) {
     fuelLayer.clearLayers();
     const isDiesel = fuelType === 'diesel';
-    const markerColor = isDiesel ? '#f59e0b' : '#3b82f6';
+
+    const fuelTypes = [
+        { key: 'gasolina', label: 'Gasolina 95', dbKey: 'gasolina_95', color: 'var(--fuel-gas)' },
+        { key: 'gasolina', label: 'Gasolina 98', dbKey: 'gasolina_98', color: 'var(--fuel-gas)' },
+        { key: 'diesel',   label: 'Diésel A',    dbKey: 'diesel',      color: 'var(--fuel-diesel)' },
+    ];
 
     stations.forEach(s => {
         const price = getDisplayPrice(s.prices, fuelType);
-        const icon = L.divIcon({
+        const markerIcon = L.divIcon({
             className: '',
-            html: `<div class="fuel-marker" style="background:linear-gradient(135deg,${markerColor},${markerColor}dd);--marker-color:${markerColor}dd"><span class="fuel-price">${price}</span></div>`,
-            iconSize: [52, 24], iconAnchor: [26, 24]
+            html: `<div class="mk-fuel${isDiesel ? ' is-diesel' : ''}">${escapeHtml(price)}</div>`,
+            iconSize: [64, 26], iconAnchor: [32, 13], popupAnchor: [0, -14]
         });
 
-        const fuelTypes = [
-            { key: 'gasolina', label: 'Gasolina 95', dbKey: 'gasolina_95', color: '#3b82f6' },
-            { key: 'gasolina', label: 'Gasolina 98', dbKey: 'gasolina_98', color: '#818cf8' },
-            { key: 'diesel',    label: 'Diésel A',    dbKey: 'diesel',      color: '#f59e0b' },
-        ];
         const rows = fuelTypes
             .filter(ft => s.prices[ft.dbKey] != null)
-            .map(ft => {
-                const isSel = ft.key === fuelType;
-                return `<div class="fp-row${isSel ? ' fp-selected' : ''}">
+            .map(ft => `<div class="fp-row${ft.key === fuelType ? ' fp-selected' : ''}">
                     <span class="fp-dot" style="background:${ft.color}"></span>
                     <span class="fp-label">${ft.label}</span>
-                    <span class="fp-value">${s.prices[ft.dbKey].toFixed(3)}</span>
+                    <span class="fp-value">${Number(s.prices[ft.dbKey]).toFixed(3)}</span>
                     <span class="fp-unit">€/L</span>
-                </div>`;
-            });
+                </div>`);
 
         const popup = `
             <div class="fuel-popup">
                 <div class="fp-header">
-                    <div class="fp-brand">
-                        <span class="fp-pump">⛽</span>
-                        <span class="fp-name">${s.name}</span>
-                    </div>
-                    <span class="fp-badge">${s.distance} km</span>
+                    <span class="fp-name">${escapeHtml(s.name)}</span>
+                    <span class="fp-badge">${escapeHtml(s.distance)} km</span>
                 </div>
                 <div class="fp-prices">${rows.join('')}</div>
-                <div class="fp-footer">
-                    <div class="fp-addr">${s.address}</div>
-                    ${s.schedule ? `<div class="fp-sched">🕐 ${s.schedule}</div>` : ''}
+                <div>
+                    <div class="fp-addr">${escapeHtml(s.address)}</div>
+                    ${s.schedule ? `<div class="fp-sched">${icon('clock', 'icon-sm')}<span>${escapeHtml(s.schedule)}</span></div>` : ''}
                 </div>
             </div>`;
 
-        L.marker([s.lat, s.lon], { icon }).addTo(fuelLayer).bindPopup(popup, { maxWidth: 280, className: 'fuel-popup-wrapper' });
+        L.marker([s.lat, s.lon], { icon: markerIcon, title: s.name || 'Gasolinera' })
+            .addTo(fuelLayer)
+            .bindPopup(popup, { maxWidth: 300 });
     });
 
-    if (!document.getElementById('fuelBtn').classList.contains('active')) fuelLayer.remove();
+    if (!isFuelActive()) fuelLayer.remove();
 }
 
 function getCheapestPrice(prices) {
-    const vals = [prices.gasolina_95, prices.gasolina_98, prices.diesel].filter(v => v !== null);
+    const vals = [prices.gasolina_95, prices.gasolina_98, prices.diesel].filter(v => v !== null && v !== undefined);
     if (!vals.length) return '--';
-    const min = Math.min(...vals);
-    return min.toFixed(3);
+    return Math.min(...vals).toFixed(3);
 }
 
 function getDisplayPrice(prices, type) {
@@ -359,12 +542,12 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 }
 
 // ============================================
-// NAV SIGN
+// CARTEL DE ORIENTACIÓN
 // ============================================
 function updateNavSign(lat, lon) {
     if (!routeSteps.length) return;
 
-    // Encontrar el paso más cercano
+    // Paso más cercano
     let closestIdx = 0;
     let minDist = Infinity;
     routeSteps.forEach((step, i) => {
@@ -373,7 +556,7 @@ function updateNavSign(lat, lon) {
         if (d < minDist) { minDist = d; closestIdx = i; }
     });
 
-    // Mostrar el siguiente paso (el que viene)
+    // Mostrar el paso siguiente
     const nextIdx = Math.min(closestIdx + 1, routeSteps.length - 1);
     const step = routeSteps[nextIdx];
     const [sLon, sLat] = step.maneuver.location;
@@ -383,62 +566,59 @@ function updateNavSign(lat, lon) {
     const inner = sign.querySelector('.nav-sign-inner');
     sign.classList.remove('hidden');
 
-    // Estilo según tipo de carretera
-    const signClass = getSignClass(step.ref, step.maneuver.type);
-    inner.className = 'nav-sign-inner ' + signClass;
+    inner.className = 'nav-sign-inner ' + getSignClass(step.ref, step.maneuver.type);
+    sign.querySelector('.nav-arrow').innerHTML = icon(getManeuverIcon(step.maneuver.type, step.maneuver.modifier));
 
-    // Flecha de maniobra
-    sign.querySelector('.nav-arrow').innerHTML = getManeuverIcon(step.maneuver.type, step.maneuver.modifier);
+    const roadEl = sign.querySelector('.nav-road');
+    if (step.ref) {
+        roadEl.innerHTML = roadPlate(step.ref);
+    } else if (step.name) {
+        roadEl.innerHTML = `<span class="road-plate plate-plain">${escapeHtml(step.name)}</span>`;
+    } else {
+        roadEl.innerHTML = '';
+    }
 
-    // Info
-    const roadName = step.ref || step.name || '';
-    sign.querySelector('.nav-road').textContent = roadName;
-    sign.querySelector('.nav-instruction').textContent = getManeuverText(step.maneuver.type, step.maneuver.modifier, distKm);
+    sign.querySelector('.nav-instruction').textContent = getManeuverText(step.maneuver.type, step.maneuver.modifier);
 
-    // Distancia
     if (distKm < 1) {
         sign.querySelector('.nav-dist-val').textContent = Math.round(distKm * 1000);
         sign.querySelector('.nav-dist-unit').textContent = 'm';
     } else {
-        sign.querySelector('.nav-dist-val').textContent = distKm.toFixed(1);
+        sign.querySelector('.nav-dist-val').textContent = distKm.toFixed(1).replace('.', ',');
         sign.querySelector('.nav-dist-unit').textContent = 'km';
     }
 }
 
+/** Cartel azul en autovías y autopistas, blanco en carreteras convencionales */
 function getSignClass(ref, type) {
     if (type === 'arrive') return 'sign-arrive';
-    if (!ref) return 'sign-blue';
-    const r = ref.toUpperCase().trim();
-    if (r.startsWith('AP') || r.startsWith('E-')) return 'sign-green';
-    if (r.startsWith('A')) return 'sign-blue';
+    const cls = plateClass(String(ref || '').split(/[;,]/)[0]);
+    if (cls === 'plate-blue' || cls === 'plate-green') return 'sign-blue';
     return 'sign-white';
 }
 
 function getManeuverIcon(type, mod) {
-    const arrow = `<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M16 26V8"/><path d="M8 14l8-8 8 8"/></svg>`;
-
-    if (type === 'arrive')    return `<svg viewBox="0 0 32 32" fill="currentColor"><circle cx="16" cy="16" r="6"/><path d="M16 4v4m0 16v4M4 16h4m16 0h4" stroke="currentColor" stroke-width="2" fill="none"/></svg>`;
-    if (type === 'depart')    return `<div style="font-size:28px">📍</div>`;
-    if (type === 'roundabout') return `<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M16 6a10 10 0 11-8 4"/><path d="M6 8l2 4 4-2"/></svg>`;
-
-    let rotation = 0;
-    if (mod === 'left' || mod === 'sharp-left') rotation = -90;
-    else if (mod === 'right' || mod === 'sharp-right') rotation = 90;
-    else if (mod === 'slight-left') rotation = -45;
-    else if (mod === 'slight-right') rotation = 45;
-    else if (type === 'uturn') rotation = 180;
-
-    return `<div style="transform:rotate(${rotation}deg)">${arrow}</div>`;
+    if (type === 'arrive') return 'flag-checkered';
+    if (type === 'depart') return 'navigation-arrow';
+    if (type === 'roundabout' || type === 'rotary' || type === 'roundabout turn') return 'arrow-clockwise';
+    if (type === 'merge') return 'arrows-merge';
+    if (type === 'fork') return 'arrows-split';
+    if (type === 'uturn' || mod === 'uturn') return 'arrow-u-up-left';
+    if (mod === 'left' || mod === 'sharp-left') return 'arrow-bend-up-left';
+    if (mod === 'right' || mod === 'sharp-right') return 'arrow-bend-up-right';
+    if (mod === 'slight-left') return 'arrow-up-left';
+    if (mod === 'slight-right') return 'arrow-up-right';
+    return 'arrow-up';
 }
 
-function getManeuverText(type, mod, distKm) {
+function getManeuverText(type, mod) {
     if (type === 'arrive') return 'Destino';
     if (type === 'depart') return 'Salida';
-    if (type === 'roundabout') return 'Rotonda';
+    if (type === 'roundabout' || type === 'rotary') return 'Rotonda';
     if (type === 'merge') return 'Incorpórese';
-    if (type === 'uturn') return 'Cambie de sentido';
+    if (type === 'uturn' || mod === 'uturn') return 'Cambie de sentido';
     if (type === 'fork') {
-        return mod?.includes('left') ? 'Bifurcación izq.' : 'Bifurcación dcha.';
+        return mod?.includes('left') ? 'Bifurcación a la izquierda' : 'Bifurcación a la derecha';
     }
     const turns = {
         'sharp-left':  'Gire a la izquierda',
@@ -453,18 +633,17 @@ function getManeuverText(type, mod, distKm) {
 }
 
 // ============================================
-// AUTOCOMPLETE
+// AUTOCOMPLETADO
 // ============================================
 function sugIcon(type, cls) {
-    if (type === 'city' || type === 'town') return '🏙️';
-    if (type === 'village' || type === 'hamlet' || type === 'locality') return '🏘️';
-    if (type === 'house')             return '🏠';
-    if (type === 'street' || type === 'highway' || cls === 'highway') return '🛣️';
-    if (type === 'building' || cls === 'building') return '🏢';
-    if (type === 'railway' || cls === 'railway') return '🚆';
-    if (type === 'aerodrome')         return '✈️';
-    if (cls === 'boundary' || cls === 'place') return '📍';
-    return '📍';
+    if (type === 'house') return 'map-pin';
+    if (type === 'street' || type === 'highway' || cls === 'highway') return 'path';
+    if (type === 'railway' || cls === 'railway') return 'navigation-arrow';
+    return 'map-pin';
+}
+
+function closeSuggestions() {
+    document.querySelectorAll('.suggestions').forEach(s => s.classList.remove('active'));
 }
 
 function autocomplete(id) {
@@ -479,53 +658,47 @@ function autocomplete(id) {
         try {
             const res = await fetch(`api/geocode.php?q=${encodeURIComponent(q)}`);
             const data = await res.json();
-            if (!data.length) { box.classList.remove('active'); return; }
+            if (!Array.isArray(data) || !data.length) { box.classList.remove('active'); return; }
 
             box.innerHTML = data.map((r, i) => {
                 const parts = (r.display_name || '').split(',');
                 const main = parts.slice(0, 2).join(',').trim();
                 const detail = parts.slice(2, 4).join(',').trim();
-                const icon = sugIcon(r.type, r.class);
-                return `<div class="suggestion-item" data-i="${i}">
-                    <div class="sug-icon">${icon}</div>
-                    <div class="sug-body">
-                        <div class="sug-main">${main}</div>
-                        ${detail ? `<div class="sug-detail">${detail}</div>` : ''}
-                    </div>
-                    <span class="sug-badge">${r.type || ''}</span>
-                </div>`;
+                return `<button type="button" class="suggestion-item" role="option" data-i="${i}">
+                    <span class="sug-icon">${icon(sugIcon(r.type, r.class))}</span>
+                    <span class="sug-body">
+                        <span class="sug-main">${escapeHtml(main)}</span>
+                        ${detail ? `<span class="sug-detail">${escapeHtml(detail)}</span>` : ''}
+                    </span>
+                </button>`;
             }).join('');
-
-            // Posicionar el dropdown debajo del input
-            const rect = input.getBoundingClientRect();
-            box.style.top = (rect.bottom + 6) + 'px';
-            box.style.left = rect.left + 'px';
-            box.style.width = rect.width + 'px';
 
             box.classList.add('active');
 
             box.querySelectorAll('.suggestion-item').forEach(el => {
                 el.addEventListener('click', () => {
-                    const r = data[parseInt(el.dataset.i)];
-                    // Mantener lo que el usuario escribió (nº casa)
+                    const r = data[parseInt(el.dataset.i, 10)];
+                    // Se mantiene lo que escribió el usuario (nº de casa)
                     input.dataset.lat = r.lat;
                     input.dataset.lon = r.lon;
-                    // Guardar si la sugerencia tiene número de casa real
                     input.dataset.hasHouse = (r.housenumber || r.type === 'house') ? '1' : '0';
                     box.classList.remove('active');
-                    const dot = input.closest('.search-row')?.querySelector('.dot');
-                    if (dot) { dot.style.background = 'var(--accent)'; dot.style.boxShadow = '0 0 8px var(--accent)'; }
+                    input.closest('.search-row')?.classList.add('is-set');
+                    input.focus();
                 });
             });
-        } catch (e) {}
+        } catch (e) {
+            box.classList.remove('active');
+        }
     }, 350);
 }
 
 // ============================================
-// SEARCH ROUTE
+// BUSCAR RUTA
 // ============================================
 async function searchRoute() {
-    document.querySelectorAll('.suggestions').forEach(s => s.classList.remove('active'));
+    closeSuggestions();
+    hideError();
 
     const oInput = document.getElementById('origin');
     const dInput = document.getElementById('destination');
@@ -533,33 +706,40 @@ async function searchRoute() {
     let dLat = dInput.dataset.lat, dLon = dInput.dataset.lon;
     let approxMsg = '';
 
-    // Verificar si el usuario puso número pero la sugerencia no lo tiene
+    if (!oInput.value.trim() && currentLat && currentLon) {
+        oLat = currentLat; oLon = currentLon;
+    }
+    if (!dInput.value.trim()) {
+        showError('Escribe un destino para calcular la ruta.');
+        dInput.focus();
+        return;
+    }
+
+    // ¿El usuario escribió número pero la sugerencia no lo tiene?
     const oHasNumber = /\d+/.test(oInput.value.replace(/\d{5,}/, ''));
     const dHasNumber = /\d+/.test(dInput.value.replace(/\d{5,}/, ''));
 
-    if (!oLat || !oLon) {
-        const r = await geocode(oInput.value);
-        if (!r) { showError('Origen no encontrado'); return; }
-        oLat = r.lat; oLon = r.lon;
-        if (r.approx) approxMsg = 'Origen: ubicación aproximada (número no disponible)';
-    } else if (oHasNumber && oInput.dataset.hasHouse === '0') {
-        approxMsg = 'Origen: número de casa no disponible en el mapa';
-    }
-
-    if (!dLat || !dLon) {
-        const r = await geocode(dInput.value);
-        if (!r) { showError('Destino no encontrado'); return; }
-        dLat = r.lat; dLon = r.lon;
-        if (r.approx) approxMsg += (approxMsg ? ' · ' : '') + 'Destino: ubicación aproximada';
-    } else if (dHasNumber && dInput.dataset.hasHouse === '0') {
-        approxMsg += (approxMsg ? ' · ' : '') + 'Destino: número no disponible';
-    }
-
-    if (approxMsg) showError(approxMsg);
-
-    showLoading(true); hideError();
+    showLoading(true);
 
     try {
+        if (!oLat || !oLon) {
+            const r = await geocode(oInput.value);
+            if (!r) { showError('No encontramos el origen. Prueba con otra dirección o usa tu ubicación.'); return; }
+            oLat = r.lat; oLon = r.lon;
+            if (r.approx) approxMsg = 'Origen aproximado: el número no está en el mapa.';
+        } else if (oHasNumber && oInput.dataset.hasHouse === '0') {
+            approxMsg = 'Origen aproximado: el número no está en el mapa.';
+        }
+
+        if (!dLat || !dLon) {
+            const r = await geocode(dInput.value);
+            if (!r) { showError('No encontramos el destino. Prueba con otra dirección.'); return; }
+            dLat = r.lat; dLon = r.lon;
+            if (r.approx) approxMsg += (approxMsg ? ' ' : '') + 'Destino aproximado: el número no está en el mapa.';
+        } else if (dHasNumber && dInput.dataset.hasHouse === '0') {
+            approxMsg += (approxMsg ? ' ' : '') + 'Destino aproximado: el número no está en el mapa.';
+        }
+
         const pref = routePreference === 'shortest' ? '&shortest=true' : '';
         const routeRes = await fetch(`api/route.php?olat=${oLat}&olon=${oLon}&dlat=${dLat}&dlon=${dLon}${pref}`);
         const route = await routeRes.json();
@@ -569,29 +749,28 @@ async function searchRoute() {
         const cParam = pts.map(p => `${p.lat},${p.lon}`).join(';');
         const wRes = await fetch(`api/weather.php?coords=${encodeURIComponent(cParam)}`);
         let weather = await wRes.json();
-        if (weather.error) weather = [];
+        if (!Array.isArray(weather)) weather = [];
 
         const b = route.bounds;
         const wnRes = await fetch(`api/warnings.php?south=${b.south}&west=${b.west}&north=${b.north}&east=${b.east}`);
         let warnings = await wnRes.json();
         if (!Array.isArray(warnings)) warnings = [];
 
-        // Filtrar: solo avisos a menos de 3 km de la ruta
-        const routeCoords = route.geometry.coordinates; // [[lon,lat], ...]
-        warnings = filterToRoute(warnings, routeCoords, 3);
+        // Solo avisos a menos de 3 km de la ruta
+        warnings = filterToRoute(warnings, route.geometry.coordinates, 3);
 
         drawRoute(route, oLat, oLon, dLat, dLon);
         drawWeatherMarkers(pts, weather);
-        drawWazeMarkers(warnings);
+        drawWarningMarkers(warningsLayer, warnings);
         fillResults(route, weather, warnings);
 
-        // Modo ruta
         routeSteps = route.steps || [];
         enterRouteMode(parseFloat(oLat), parseFloat(oLon), route, weather);
 
+        if (approxMsg) showToast(approxMsg, 'warning-circle');
     } catch (e) {
         console.error(e);
-        showError('Error calculando la ruta');
+        showError('No se pudo calcular la ruta. Comprueba la conexión y vuelve a intentarlo.');
     } finally {
         showLoading(false);
     }
@@ -602,10 +781,9 @@ async function geocode(q) {
     try {
         const r = await fetch(`api/geocode.php?q=${encodeURIComponent(q)}`);
         const d = await r.json();
-        if (d.length) {
+        if (Array.isArray(d) && d.length) {
             const result = d[0];
-            // Si el usuario puso número y Nominatim no lo tiene, marcar como aproximado
-            const hasNumber = /\d+/.test(q.replace(/\d{5,}/, '')); // ignorar CP
+            const hasNumber = /\d+/.test(q.replace(/\d{5,}/, '')); // se ignora el código postal
             const isApprox = hasNumber && result.type !== 'house';
             return { lat: result.lat, lon: result.lon, approx: isApprox };
         }
@@ -615,26 +793,21 @@ async function geocode(q) {
 
 /**
  * Filtra avisos: solo los que están a <= maxKm de algún punto de la ruta.
- * Usa distancia euclínea rápida (~111 km/lat).
  */
 function filterToRoute(warnings, routeCoords, maxKm) {
     if (!routeCoords || !routeCoords.length) return warnings;
 
-    // Muestrear la ruta (cada N puntos para no hacer 10000 comparaciones)
     const step = Math.max(1, Math.floor(routeCoords.length / 200));
     const sampled = [];
-    for (let i = 0; i < routeCoords.length; i += step) {
-        sampled.push(routeCoords[i]);
-    }
+    for (let i = 0; i < routeCoords.length; i += step) sampled.push(routeCoords[i]);
 
-    const maxDeg = maxKm / 111; // aproximación
+    const maxDeg = maxKm / 111;
 
     return warnings.filter(w => {
         if (!w.lat || !w.lon) return false;
         for (let i = 0; i < sampled.length; i++) {
             const dLat = w.lat - sampled[i][1];
             const dLon = w.lon - sampled[i][0];
-            // Corregir longitud por cos(lat)
             const dist = Math.sqrt(dLat * dLat + (dLon * Math.cos(w.lat * Math.PI / 180)) ** 2);
             if (dist <= maxDeg) return true;
         }
@@ -643,75 +816,91 @@ function filterToRoute(warnings, routeCoords, maxKm) {
 }
 
 // ============================================
-// ROUTE MODE
+// MODO RUTA
 // ============================================
 function enterRouteMode(oLat, oLon, routeData, weatherData) {
-    // Zoom a tu ubicación GPS real (como Google Maps), o al origen si no hay GPS
+    inRouteMode = true;
     const myLat = currentLat || oLat;
     const myLon = currentLon || oLon;
     map.setView([myLat, myLon], 15, { animate: true });
 
-    // Activar follow
     followMode = true;
-    document.getElementById('centerBtn').classList.add('active');
+    document.getElementById('centerBtn').setAttribute('aria-pressed', 'true');
 
-    // Ocultar avisos cercanos (la ruta tiene los suyos)
+    // Los avisos de la ruta sustituyen a los cercanos
     nearbyLayer.remove();
 
-    // Top bar
-    const topBar = document.getElementById('topBar');
-    topBar.classList.remove('hidden');
+    document.getElementById('topBar').classList.remove('hidden');
 
-    // ETA
     routeDurationMin = routeData.duration;
     routeStartTime = Date.now();
     updateETA();
-    setInterval(updateETA, 30000);
+    if (etaTimer) clearInterval(etaTimer);
+    etaTimer = setInterval(updateETA, 30000);
 
-    // Info top bar
-    document.getElementById('tbDetail').textContent = `${routeData.distance} km · ${Math.round(routeData.duration)} min`;
+    document.getElementById('tbDetail').textContent = `${String(routeData.distance).replace('.', ',')} km, ${formatDuration(routeData.duration)}`;
 
-    // Clima predominante
     if (weatherData.length) {
         const main = weatherData[Math.floor(weatherData.length / 2)];
-        document.getElementById('tbWeather').innerHTML = `
-            <span class="tb-weather-icon">${main.icon}</span>
-            <span class="tb-weather-temp">${main.temperature}°</span>`;
+        document.getElementById('tbWeather').innerHTML =
+            `<span class="tb-weather-icon ${sevClass(main.severity)}">${icon(weatherIcon(main.weather_code))}</span>
+             <span>${formatTemp(main.temperature)}°</span>`;
     }
 
-    // Cambiar paneles
     document.getElementById('searchPanel').classList.add('hidden');
-    document.getElementById('resultsPanel').classList.remove('hidden');
+    const results = document.getElementById('resultsPanel');
+    results.classList.remove('hidden');
+    results.scrollTop = 0;
+    results.classList.remove('is-entering');
+    void results.offsetWidth;
+    results.classList.add('is-entering');
+    // En móvil el panel se pliega para dejar ver el mapa; queda a la vista el resumen
+    const sheet = document.getElementById('bottomSheet');
+    sheet.classList.add('in-route');
+    if (window.innerWidth < 900) collapseSheet();
 
-    // Ajustar FABs
-    updateFabsPosition(true);
-
-    // Señal de navegación
+    const sign = document.getElementById('navSign');
     if (currentLat && currentLon) updateNavSign(currentLat, currentLon);
     else updateNavSign(oLat, oLon);
+    sign.classList.remove('is-entering');
+    void sign.offsetWidth;
+    sign.classList.add('is-entering');
+
+    updateFabsPosition(true);
 }
 
 function exitRouteMode() {
+    inRouteMode = false;
+    document.getElementById('bottomSheet').classList.remove('in-route');
+    expandSheet();
     document.getElementById('topBar').classList.add('hidden');
     document.getElementById('navSign').classList.add('hidden');
-    document.getElementById('searchPanel').classList.remove('hidden');
     document.getElementById('resultsPanel').classList.add('hidden');
+    const search = document.getElementById('searchPanel');
+    search.classList.remove('hidden');
+    search.classList.remove('is-entering');
+    void search.offsetWidth;
+    search.classList.add('is-entering');
 
     routeLayer.clearLayers();
     weatherLayer.clearLayers();
     warningsLayer.clearLayers();
+    routeLines = [];
     routeSteps = [];
+    routeStartTime = null;
+    if (etaTimer) { clearInterval(etaTimer); etaTimer = null; }
 
-    // Restaurar capas cercanas
     nearbyLayer.addTo(map);
-    if (document.getElementById('fuelBtn').classList.contains('active')) fuelLayer.addTo(map);
+    if (isFuelActive()) fuelLayer.addTo(map);
 
     updateFabsPosition(false);
-    map.setView([40.0, -3.7], 6);
+    if (currentLat && currentLon) map.setView([currentLat, currentLon], 14);
+    else map.setView([40.0, -3.7], 6);
 }
 
 function newSearch() {
     exitRouteMode();
+    document.getElementById('destination').focus();
 }
 
 function updateETA() {
@@ -724,29 +913,44 @@ function updateETA() {
     document.getElementById('tbEta').textContent = `${h}:${m}`;
 }
 
+/** Baja los botones flotantes y el velocímetro por debajo de la barra y el cartel */
 function updateFabsPosition(inRoute) {
-    const offset = inRoute ? '70px' : '0px';
-    document.querySelectorAll('.map-fabs, .fab-red').forEach(el => {
-        el.style.setProperty('--top-offset', offset);
-    });
+    let offset = 0;
+    if (inRoute) {
+        const fabsRect = document.querySelector('.map-fabs').getBoundingClientRect();
+        const fabsLeft = fabsRect.left || (window.innerWidth - 64);
+        ['topBar', 'navSign'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el.classList.contains('hidden')) return;
+            const r = el.getBoundingClientRect();
+            const overlaps = r.right > fabsLeft - 72;
+            if (overlaps) offset = Math.max(offset, r.bottom - 4);
+        });
+    }
+    document.documentElement.style.setProperty('--top-offset', `${Math.round(offset)}px`);
 }
 
 // ============================================
-// DRAWING
+// DIBUJO
 // ============================================
 function drawRoute(data, oLat, oLon, dLat, dLon) {
     routeLayer.clearLayers();
     const coords = data.geometry.coordinates.map(c => [c[1], c[0]]);
+    const color = cssVar('--accent');
 
-    L.polyline(coords, { color: '#00d4aa', weight: 12, opacity: 0.12, smoothFactor: 1 }).addTo(routeLayer);
-    L.polyline(coords, { color: '#00d4aa', weight: 5, opacity: 0.85, smoothFactor: 1, lineCap: 'round' }).addTo(routeLayer);
+    routeLines = [
+        L.polyline(coords, { color, weight: 14, opacity: 0.18, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(routeLayer),
+        L.polyline(coords, { color, weight: 6, opacity: 0.95, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(routeLayer)
+    ];
 
     originMarker = L.marker([parseFloat(oLat), parseFloat(oLon)], {
-        icon: L.divIcon({ className: '', html: '<div class="waze-marker" style="background:#00d4aa">🟢</div>', iconSize: [40, 48], iconAnchor: [20, 40] })
+        title: 'Origen',
+        icon: L.divIcon({ className: '', html: `<div class="mk-endpoint mk-origin">${icon('navigation-arrow', 'icon-sm')}</div>`, iconSize: [34, 34], iconAnchor: [17, 17], popupAnchor: [0, -18] })
     }).addTo(routeLayer).bindPopup('<div class="popup-title">Origen</div>');
 
     destMarker = L.marker([parseFloat(dLat), parseFloat(dLon)], {
-        icon: L.divIcon({ className: '', html: '<div class="waze-marker" style="background:#ef4444">🏁</div>', iconSize: [40, 48], iconAnchor: [20, 40] })
+        title: 'Destino',
+        icon: L.divIcon({ className: '', html: `<div class="mk-endpoint mk-dest">${icon('flag-checkered', 'icon-sm')}</div>`, iconSize: [34, 34], iconAnchor: [17, 17], popupAnchor: [0, -18] })
     }).addTo(routeLayer).bindPopup('<div class="popup-title">Destino</div>');
 }
 
@@ -754,37 +958,43 @@ function drawWeatherMarkers(pts, w) {
     weatherLayer.clearLayers();
     pts.forEach((p, i) => {
         const d = w[i]; if (!d) return;
-        const icon = L.divIcon({ className: '', html: `<div class="weather-marker ${d.severity}">${d.icon}</div>`, iconSize: [36, 36], iconAnchor: [18, 18] });
-        L.marker([p.lat, p.lon], { icon }).addTo(weatherLayer)
-            .bindPopup(`<div class="popup-title">${d.icon} ${d.condition}</div><div class="popup-temp">${d.temperature}°C</div><div class="popup-detail">Sensación: ${d.feels_like}° · Viento: ${d.wind_speed} km/h<br>${p.label || ''}</div>`);
+        const sev = sevClass(d.severity);
+        const markerIcon = L.divIcon({
+            className: '',
+            html: `<div class="mk-weather ${sev}">${icon(weatherIcon(d.weather_code))}</div>`,
+            iconSize: [34, 34], iconAnchor: [17, 17], popupAnchor: [0, -18]
+        });
+        L.marker([p.lat, p.lon], { icon: markerIcon, title: d.condition }).addTo(weatherLayer)
+            .bindPopup(`<div class="popup-title ${sev}">${icon(weatherIcon(d.weather_code))}${escapeHtml(d.condition)}</div>
+                <div class="popup-temp">${formatTemp(d.temperature)}°C</div>
+                <div class="popup-detail">Sensación ${formatTemp(d.feels_like)}°, viento ${escapeHtml(d.wind_speed)} km/h</div>
+                <div class="popup-source">${escapeHtml(pointLabel(p, i))}</div>`);
     });
 }
 
-function drawWazeMarkers(list) {
-    warningsLayer.clearLayers();
-    list.forEach(w => {
-        if (!w.lat || !w.lon) return;
-        const icon = L.divIcon({ className: '', html: `<div class="waze-marker ${w.icon}">${w.emoji || '⚠️'}</div>`, iconSize: [40, 48], iconAnchor: [20, 40] });
-        L.marker([w.lat, w.lon], { icon }).addTo(warningsLayer)
-            .bindPopup(buildWarningPopup(w), { maxWidth: 280 });
-    });
+function pointLabel(p, i) {
+    if (p.label === 'Inicio') return 'Salida';
+    if (p.label === 'Destino') return 'Destino';
+    if (p.km !== undefined) return `Km ${Math.round(p.km)}`;
+    return `Punto ${i + 1}`;
 }
 
 function buildWarningPopup(w) {
-    let html = `<div class="popup-title">${w.emoji || '⚠️'} ${w.title}</div>`;
-    html += `<div class="popup-detail">${w.detail || ''}`;
-    if (w.road) html += `<br><strong>🛣️ ${w.road}</strong>`;
-    html += `</div>`;
-    if (w.source) html += `<div class="popup-source">${w.source}</div>`;
+    const sev = sevClass(w.severity);
+    let html = `<div class="popup-title ${sev}">${icon(warningIcon(w.type))}${escapeHtml(w.title || 'Aviso')}</div>`;
+    if (w.detail) html += `<div class="popup-detail">${escapeHtml(w.detail)}</div>`;
+    if (w.road) html += `<div class="popup-road">${roadPlate(w.road)}</div>`;
+    if (w.source) html += `<div class="popup-source">Fuente: ${escapeHtml(w.source)}</div>`;
 
-    // Votación solo para avisos de comunidad (reportes de usuario)
-    if (w.id && w.id.startsWith('rpt_')) {
+    // Votación solo para avisos de la comunidad
+    if (w.id && String(w.id).startsWith('rpt_')) {
+        const id = escapeHtml(w.id);
         const vc = w.votes_confirm || 0;
         const vd = w.votes_dismiss || 0;
-        html += `<div class="warning-vote" id="vote-${w.id}">
-            <span class="vote-label">¿Sigue aquí?</span>
-            <button class="vote-btn vote-confirm" onclick="voteWarning('${w.id}','confirm')">👍 ${vc > 0 ? vc : ''} Sí</button>
-            <button class="vote-btn vote-dismiss" onclick="voteWarning('${w.id}','dismiss')">👎 ${vd > 0 ? vd : ''} No</button>
+        html += `<div class="warning-vote" data-vote-box="${id}">
+            <span class="vote-label">¿Sigue ahí?</span>
+            <button type="button" class="vote-btn" data-vote="confirm" data-report="${id}">${icon('thumbs-up', 'icon-sm')}Sí${vc > 0 ? ` <span class="num">${vc}</span>` : ''}</button>
+            <button type="button" class="vote-btn" data-vote="dismiss" data-report="${id}">${icon('thumbs-down', 'icon-sm')}No${vd > 0 ? ` <span class="num">${vd}</span>` : ''}</button>
         </div>`;
     }
     return html;
@@ -799,107 +1009,140 @@ async function voteWarning(reportId, vote) {
         });
         const d = await r.json();
         if (d.ok) {
-            const el = document.getElementById(`vote-${reportId}`);
-            if (el) {
+            document.querySelectorAll('[data-vote-box]').forEach(el => {
+                if (el.dataset.voteBox !== reportId) return;
                 el.innerHTML = vote === 'confirm'
-                    ? '<span class="vote-thanks">✅ Gracias por confirmar</span>'
-                    : '<span class="vote-thanks">🗑️ Se eliminará pronto</span>';
-            }
+                    ? `<span class="vote-thanks">${icon('check', 'icon-sm')}Gracias por confirmarlo</span>`
+                    : `<span class="vote-thanks">${icon('check', 'icon-sm')}Anotado. Se retirará con más votos</span>`;
+            });
+        } else {
+            showToast('No se pudo registrar el voto', 'warning-circle');
         }
     } catch (e) {
-        console.error('Vote error:', e);
+        console.error('Voto:', e);
+        showToast('No se pudo registrar el voto', 'warning-circle');
     }
 }
 
 // ============================================
-// FILL RESULTS
+// RESULTADOS
 // ============================================
 function fillResults(route, weather, warnings) {
-    document.getElementById('statDistance').textContent = route.distance;
+    document.getElementById('statDistance').textContent = String(route.distance).replace('.', ',');
     document.getElementById('statDuration').textContent = Math.round(route.duration);
     document.getElementById('statWarnings').textContent = warnings.length;
 
     const temps = weather.filter(w => w.temperature !== null).map(w => w.temperature);
     document.getElementById('statTemp').textContent = temps.length ? (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(0) : '--';
 
-    // Weather strip
+    // Resumen de condiciones
     const conds = {};
     weather.forEach(w => { if (!conds[w.condition]) conds[w.condition] = w; });
     document.getElementById('weatherStrip').innerHTML = Object.values(conds).map(w =>
-        `<div class="wstrip-item wstrip-sev ${w.severity}"><span class="wstrip-icon">${w.icon}</span>${w.condition}</div>`
+        `<span class="wstrip-item ${sevClass(w.severity)}">${icon(weatherIcon(w.weather_code), 'icon-sm')}${escapeHtml(w.condition)}</span>`
     ).join('');
 
-    // Warnings tab
+    // Avisos
     const wList = document.getElementById('warningsList');
     if (!warnings.length) {
-        wList.innerHTML = '<div class="no-items">Sin avisos en la ruta</div>';
+        wList.innerHTML = `<div class="empty-state">
+            ${icon('check')}
+            <div class="empty-title">Sin avisos en la ruta</div>
+            <div class="empty-desc">Si ves algo en la carretera, repórtalo con el botón de aviso del mapa.</div>
+        </div>`;
     } else {
         wList.innerHTML = warnings.map(w => `
-            <div class="warning-item" data-lat="${w.lat}" data-lon="${w.lon}">
-                <span class="wi-emoji">${w.emoji || '⚠️'}</span>
-                <div class="wi-body">
-                    <div class="wi-title">${w.title}</div>
-                    <div class="wi-desc">${w.detail || ''}</div>
-                    ${w.road ? `<span class="wi-road">🛣️ ${w.road}</span>` : ''}
-                    ${w.source ? `<div class="wi-source">${w.source}</div>` : ''}
-                </div>
-            </div>`).join('');
+            <button type="button" class="warning-item" data-lat="${Number(w.lat)}" data-lon="${Number(w.lon)}">
+                <span class="wi-badge ${sevClass(w.severity)}">${icon(warningIcon(w.type))}</span>
+                <span class="wi-body">
+                    <span class="wi-head"><span class="wi-title">${escapeHtml(w.title || 'Aviso')}</span>${w.road ? roadPlate(w.road) : ''}</span>
+                    ${w.detail ? `<span class="wi-desc">${escapeHtml(w.detail)}</span>` : ''}
+                    ${w.source ? `<span class="wi-source">${escapeHtml(w.source)}</span>` : ''}
+                </span>
+            </button>`).join('');
         wList.querySelectorAll('.warning-item').forEach(el => {
-            el.addEventListener('click', () => {
-                map.setView([parseFloat(el.dataset.lat), parseFloat(el.dataset.lon)], 14);
-            });
+            el.addEventListener('click', () => focusMapAt(el, 14));
         });
+        stagger(wList);
     }
 
-    // Timeline tab
-    document.getElementById('timelineScroll').innerHTML = route.samplePoints.map((p, i) => {
+    // Hitos kilométricos
+    const timeline = document.getElementById('timelineScroll');
+    timeline.innerHTML = route.samplePoints.map((p, i) => {
         const w = weather[i]; if (!w) return '';
-        return `<div class="wt-point" data-lat="${p.lat}" data-lon="${p.lon}">
-            <span class="wt-icon">${w.icon}</span>
-            <span class="wt-temp">${w.temperature}°</span>
-            <span class="wt-label">${p.label || ''}</span>
-        </div>`;
+        const cap = p.label === 'Inicio' ? 'Salida' : p.label === 'Destino' ? 'Meta' : `Km ${Math.round(p.km)}`;
+        return `<button type="button" class="wt-point ${sevClass(w.severity)}" data-lat="${Number(p.lat)}" data-lon="${Number(p.lon)}" aria-label="${escapeHtml(pointLabel(p, i))}: ${escapeHtml(w.condition)}, ${formatTemp(w.temperature)} grados">
+            <span class="wt-cap">${escapeHtml(cap)}</span>
+            <span class="wt-icon">${icon(weatherIcon(w.weather_code), 'icon-lg')}</span>
+            <span class="wt-temp">${formatTemp(w.temperature)}°</span>
+        </button>`;
     }).join('');
-    document.getElementById('timelineScroll').querySelectorAll('.wt-point').forEach(el => {
-        el.addEventListener('click', () => map.setView([parseFloat(el.dataset.lat), parseFloat(el.dataset.lon)], 10));
+    timeline.querySelectorAll('.wt-point').forEach(el => {
+        el.addEventListener('click', () => focusMapAt(el, 10));
     });
 
-    // Detail tab
-    document.getElementById('weatherCards').innerHTML = route.samplePoints.map((p, i) => {
+    // Detalle
+    const cards = document.getElementById('weatherCards');
+    cards.innerHTML = route.samplePoints.map((p, i) => {
         const w = weather[i]; if (!w) return '';
-        return `<div class="wcard" data-lat="${p.lat}" data-lon="${p.lon}">
-            <div class="wcard-bar ${w.severity}"></div>
-            <span class="wcard-icon">${w.icon}</span>
-            <div class="wcard-body">
-                <div class="wcard-loc">${p.label || `Punto ${i + 1}`}</div>
-                <div class="wcard-cond">${w.condition}${w.precipitation > 0 ? ` · ${w.precipitation}mm` : ''}</div>
-            </div>
-            <div class="wcard-meta">
-                <div class="wcard-temp">${w.temperature}°</div>
-                <div class="wcard-wind">💨 ${w.wind_speed} km/h</div>
-            </div>
-        </div>`;
+        return `<button type="button" class="wcard ${sevClass(w.severity)}" data-lat="${Number(p.lat)}" data-lon="${Number(p.lon)}">
+            <span class="wcard-icon">${icon(weatherIcon(w.weather_code), 'icon-lg')}</span>
+            <span>
+                <span class="wcard-loc">${escapeHtml(pointLabel(p, i))}</span>
+                <span class="wcard-cond">${escapeHtml(w.condition)}${w.precipitation > 0 ? `, ${escapeHtml(w.precipitation)} mm` : ''}</span>
+            </span>
+            <span class="wcard-meta">
+                <span class="wcard-temp">${formatTemp(w.temperature)}°</span>
+                <span class="wcard-wind">${icon('wind', 'icon-sm')}<span class="num">${escapeHtml(w.wind_speed)}</span> km/h</span>
+            </span>
+        </button>`;
     }).join('');
-    document.getElementById('weatherCards').querySelectorAll('.wcard').forEach(el => {
-        el.addEventListener('click', () => map.setView([parseFloat(el.dataset.lat), parseFloat(el.dataset.lon)], 10));
+    cards.querySelectorAll('.wcard').forEach(el => {
+        el.addEventListener('click', () => focusMapAt(el, 10));
     });
 }
 
+function focusMapAt(el, zoom) {
+    followMode = false;
+    document.getElementById('centerBtn').setAttribute('aria-pressed', 'false');
+    map.setView([parseFloat(el.dataset.lat), parseFloat(el.dataset.lon)], zoom);
+}
+
 // ============================================
-// REPORT MODAL
+// DIÁLOGO DE REPORTE
 // ============================================
 function initReportModal() {
     const modal = document.getElementById('reportModal');
     const submitBtn = document.getElementById('submitReport');
+    const openBtn = document.getElementById('reportBtn');
+    const typeButtons = document.querySelectorAll('.rpt-btn');
 
-    document.getElementById('reportBtn').addEventListener('click', () => modal.classList.remove('hidden'));
-    document.getElementById('closeReportModal').addEventListener('click', () => modal.classList.add('hidden'));
-    modal.querySelector('.modal-backdrop').addEventListener('click', () => modal.classList.add('hidden'));
+    const open = () => {
+        modal.classList.remove('hidden');
+        typeButtons[0].focus();
+    };
+    const close = () => {
+        modal.classList.add('hidden');
+        openBtn.focus();
+    };
 
-    document.querySelectorAll('.rpt-btn').forEach(btn => {
+    openBtn.addEventListener('click', open);
+    document.getElementById('closeReportModal').addEventListener('click', close);
+    modal.querySelector('.modal-backdrop').addEventListener('click', close);
+    modal.addEventListener('keydown', e => {
+        if (e.key === 'Escape') close();
+        if (e.key === 'Tab') {
+            // Mantener el foco dentro del diálogo
+            const focusables = [...modal.querySelectorAll('button:not(:disabled), input')];
+            const first = focusables[0], last = focusables[focusables.length - 1];
+            if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+            else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+    });
+
+    typeButtons.forEach(btn => {
         btn.addEventListener('click', () => {
-            document.querySelectorAll('.rpt-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
+            setPressed(typeButtons, btn);
             selectedReportType = btn.dataset.type;
             submitBtn.disabled = false;
         });
@@ -916,6 +1159,8 @@ function initReportModal() {
             comment: document.getElementById('reportComment').value
         };
 
+        submitBtn.disabled = true;
+        submitBtn.classList.add('is-loading');
         try {
             const r = await fetch('api/warnings.php', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -923,21 +1168,58 @@ function initReportModal() {
             });
             const d = await r.json();
             if (d.ok) {
-                modal.classList.add('hidden');
-                document.querySelectorAll('.rpt-btn').forEach(b => b.classList.remove('active'));
-                submitBtn.disabled = true;
+                setPressed(typeButtons, null);
                 document.getElementById('reportRoad').value = '';
                 document.getElementById('reportComment').value = '';
                 selectedReportType = null;
-                alert('¡Reporte enviado!');
+                close();
+                showToast('Reporte enviado. Gracias por avisar', 'check');
+                if (currentLat && currentLon && !inRouteMode) loadNearby(currentLat, currentLon);
+            } else {
+                submitBtn.disabled = false;
+                showToast('No se pudo enviar el reporte', 'warning-circle');
             }
-        } catch (e) { showError('Error al enviar'); }
+        } catch (e) {
+            submitBtn.disabled = false;
+            showToast('No se pudo enviar el reporte. Revisa la conexión', 'warning-circle');
+        } finally {
+            submitBtn.classList.remove('is-loading');
+        }
     });
 }
 
 // ============================================
-// UI HELPERS
+// UI
 // ============================================
-function showLoading(v) { document.getElementById('loading').classList.toggle('hidden', !v); }
-function showError(m) { const el = document.getElementById('error'); el.textContent = m; el.classList.remove('hidden'); setTimeout(() => el.classList.add('hidden'), 4000); }
-function hideError() { document.getElementById('error').classList.add('hidden'); }
+function showLoading(v) {
+    const btn = document.getElementById('searchBtn');
+    btn.disabled = v;
+    btn.classList.toggle('is-loading', v);
+    btn.setAttribute('aria-busy', v ? 'true' : 'false');
+    btn.querySelector('.btn-label').textContent = v ? 'Calculando ruta' : 'Buscar ruta';
+}
+
+function showError(message, isNotice = false) {
+    const el = document.getElementById('error');
+    el.innerHTML = `${icon(isNotice ? 'warning-circle' : 'warning')}<span>${escapeHtml(message)}</span>`;
+    el.classList.toggle('is-notice', isNotice);
+    el.classList.remove('hidden');
+    expandSheet();
+    if (errorTimer) clearTimeout(errorTimer);
+    errorTimer = setTimeout(() => el.classList.add('hidden'), 6000);
+}
+
+function hideError() {
+    document.getElementById('error').classList.add('hidden');
+}
+
+function showToast(message, iconName = 'check') {
+    const el = document.getElementById('toast');
+    el.innerHTML = `${icon(iconName)}<span>${escapeHtml(message)}</span>`;
+    el.classList.remove('hidden');
+    el.style.animation = 'none';
+    void el.offsetWidth;
+    el.style.animation = '';
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.add('hidden'), 3500);
+}
