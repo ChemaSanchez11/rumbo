@@ -1,3 +1,11 @@
+<?php
+require_once __DIR__ . '/includes/config.php';
+// Versión de los recursos según su fecha de modificación: evita que el navegador use copias antiguas
+function asset(string $path): string {
+    $file = __DIR__ . '/' . $path;
+    return $path . (file_exists($file) ? '?v=' . filemtime($file) : '');
+}
+?>
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -13,7 +21,7 @@
 
     <link rel="preload" href="assets/fonts/overpass-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="lib/leaflet/leaflet.css">
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="<?= asset('css/style.css') ?>">
 </head>
 <body>
     <?php include __DIR__ . '/assets/icons.svg'; ?>
@@ -228,6 +236,7 @@
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
     <script src="lib/leaflet/leaflet.js"></script>
-    <script src="js/app.js"></script>
+    <script>window.RUMBO_TILES = <?= json_encode(MAP_TILES, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?>;</script>
+    <script src="<?= asset('js/app.js') ?>"></script>
 </body>
 </html>

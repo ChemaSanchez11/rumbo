@@ -27,13 +27,8 @@ let errorTimer = null;
 
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
 
-// Teselas de CARTO (basadas en OSM). Los servidores de tile.openstreetmap.org
-// bloquean apps que no cumplen su política de uso.
-const TILES = {
-    light: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-};
-const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
+// Teselas del mapa: se configuran en includes/config.php (MAP_TILES)
+const TILES = window.RUMBO_TILES || {};
 
 // Tipo de aviso → icono (Phosphor)
 const WARNING_ICONS = {
@@ -156,11 +151,9 @@ function initMap() {
     });
     L.control.zoom({ position: 'bottomright', zoomInTitle: 'Acercar', zoomOutTitle: 'Alejar' }).addTo(map);
 
-    tileLayer = L.tileLayer(darkQuery.matches ? TILES.dark : TILES.light, {
-        attribution: TILE_ATTRIBUTION,
-        subdomains: 'abcd',
-        maxZoom: 20
-    }).addTo(map);
+    const tileOptions = { attribution: TILES.attribution || '', maxZoom: TILES.maxZoom || 19 };
+    if (TILES.subdomains) tileOptions.subdomains = TILES.subdomains;
+    tileLayer = L.tileLayer((darkQuery.matches ? TILES.dark : TILES.light) || '', tileOptions).addTo(map);
 
     darkQuery.addEventListener('change', e => {
         tileLayer.setUrl(e.matches ? TILES.dark : TILES.light);

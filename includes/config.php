@@ -1,7 +1,14 @@
 <?php
 /**
  * Configuración de Rumbo
+ *
+ * Para ajustes propios del servidor (claves, proveedor de mapas), crea
+ * includes/config.local.php: se carga antes que este archivo, no se sube
+ * a git y sus valores tienen prioridad. Ver includes/config.local.example.php
  */
+if (file_exists(__DIR__ . '/config.local.php')) {
+    require_once __DIR__ . '/config.local.php';
+}
 
 // Google Maps Geocoding (mejor con números de casa)
 define('GOOGLE_GEOCODE_URL', 'https://maps.googleapis.com/maps/api/geocode/json');
@@ -39,3 +46,17 @@ define('SPAIN_BOUNDS', [
 // Cuántos puntos muestrear a lo largo de la ruta para el clima
 define('SAMPLE_INTERVAL_KM', 45);
 define('MAX_SAMPLES', 20);
+
+// Teselas del mapa (raster). Por defecto Stadia Maps: crea una cuenta gratuita
+// en https://client.stadiamaps.com y registra tu dominio; no hace falta clave.
+// Para usar otro proveedor (CARTO con clave, MapTiler...), redefine MAP_TILES
+// en config.local.php con las URLs que te dé el proveedor.
+if (!defined('MAP_TILES')) {
+    define('MAP_TILES', [
+        'light'       => 'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png',
+        'dark'        => 'https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png',
+        'subdomains'  => '',
+        'maxZoom'     => 20,
+        'attribution' => '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a> &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    ]);
+}
