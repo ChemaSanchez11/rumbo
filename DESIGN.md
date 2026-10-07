@@ -18,7 +18,7 @@ Sobria, legible a un metro de distancia y con el pulso de la carretera. La inter
 
 ## 2. Paleta y funciones
 
-Tema automático según `prefers-color-scheme`. El día y la noche son el mismo sistema, no dos webs.
+Tema según la luz del día (`js/theme.js`): claro entre el amanecer y la puesta de sol, oscuro el resto, calculado con la ubicación GPS (Madrid si no hay). No depende del modo del sistema. El día y la noche son el mismo sistema, no dos webs.
 
 | Token | Día | Noche | Función |
 |---|---|---|---|

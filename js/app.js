@@ -25,7 +25,6 @@ let lastNearbyLat = null, lastNearbyLon = null;
 let toastTimer = null;
 let errorTimer = null;
 
-const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
 
 // Teselas del mapa: se configuran en includes/config.php (MAP_TILES)
 const TILES = window.RUMBO_TILES || {};
@@ -153,10 +152,11 @@ function initMap() {
 
     const tileOptions = { attribution: TILES.attribution || '', maxZoom: TILES.maxZoom || 19 };
     if (TILES.subdomains) tileOptions.subdomains = TILES.subdomains;
-    tileLayer = L.tileLayer((darkQuery.matches ? TILES.dark : TILES.light) || '', tileOptions).addTo(map);
+    tileLayer = L.tileLayer((window.RumboTheme?.isDark() ? TILES.dark : TILES.light) || '', tileOptions).addTo(map);
 
-    darkQuery.addEventListener('change', e => {
-        tileLayer.setUrl(e.matches ? TILES.dark : TILES.light);
+    // El tema cambia con la luz del día (js/theme.js)
+    document.addEventListener('rumbo:themechange', e => {
+        tileLayer.setUrl(e.detail.theme === 'dark' ? TILES.dark : TILES.light);
         const color = cssVar('--accent');
         routeLines.forEach(line => line.setStyle({ color }));
     });
@@ -341,6 +341,7 @@ function startGPSTracking() {
                 currentLat = latitude;
                 currentLon = longitude;
                 firstFix = false;
+                window.RumboTheme?.setLocation(latitude, longitude);
                 updateGpsMarker(latitude, longitude);
                 map.flyTo([latitude, longitude], 15, { duration: 1.2 });
                 loadNearby(latitude, longitude);
@@ -364,6 +365,7 @@ function startGPSTracking() {
 
             if (firstFix) {
                 firstFix = false;
+                window.RumboTheme?.setLocation(latitude, longitude);
                 map.flyTo([latitude, longitude], 15, { duration: 1.5 });
                 loadNearby(latitude, longitude);
             } else if (followMode) {

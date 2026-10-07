@@ -14,12 +14,12 @@ function asset(string $path): string {
     <meta name="description" content="Rumbo: rutas en coche por España con el tiempo a lo largo del trayecto, avisos de tráfico y precios de gasolineras.">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <meta name="theme-color" content="#FBFBFC" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#15191F" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#FBFBFC">
     <title>Rumbo</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
 
     <link rel="preload" href="assets/fonts/overpass-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+    <script src="<?= asset('js/theme.js') ?>"></script>
     <link rel="stylesheet" href="lib/leaflet/leaflet.css">
     <link rel="stylesheet" href="<?= asset('css/style.css') ?>">
 </head>

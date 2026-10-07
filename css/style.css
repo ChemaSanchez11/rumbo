@@ -21,7 +21,7 @@
 
 /* ---------- Tokens ---------- */
 :root {
-    color-scheme: light dark;
+    color-scheme: light;
 
     --surface:    #FBFBFC;
     --surface-2:  #F0F2F5;
@@ -68,21 +68,21 @@
     --panel-w: 400px;
 }
 
-@media (prefers-color-scheme: dark) {
-    :root {
-        --surface:    #15191F;
-        --surface-2:  #1E232B;
-        --line:       #2B323C;
-        --ink:        #ECEFF3;
-        --ink-2:      #AEB5C0;
-        --ink-3:      #8C95A2;
-        --accent:     #7AA5F2;
-        --accent-ink: #0B1424;
-        --accent-soft: rgba(122, 165, 242, 0.16);
-        --shadow:     0 6px 20px rgba(0, 4, 12, 0.45), 0 1px 3px rgba(0, 4, 12, 0.4);
-        --shadow-sheet: 0 -8px 28px rgba(0, 4, 12, 0.5);
-        --fuel-diesel: #D49A3C;
-    }
+/* Noche: lo activa js/theme.js entre la puesta de sol y el amanecer */
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface:    #15191F;
+    --surface-2:  #1E232B;
+    --line:       #2B323C;
+    --ink:        #ECEFF3;
+    --ink-2:      #AEB5C0;
+    --ink-3:      #8C95A2;
+    --accent:     #7AA5F2;
+    --accent-ink: #0B1424;
+    --accent-soft: rgba(122, 165, 242, 0.16);
+    --shadow:     0 6px 20px rgba(0, 4, 12, 0.45), 0 1px 3px rgba(0, 4, 12, 0.4);
+    --shadow-sheet: 0 -8px 28px rgba(0, 4, 12, 0.5);
+    --fuel-diesel: #D49A3C;
 }
 
 /* ---------- Base ---------- */
