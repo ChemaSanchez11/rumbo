@@ -1,0 +1,24 @@
+[
+    {
+        "id": "rpt_6ac62d97b5f600.05628068",
+        "type": "accidente",
+        "lat": 37.20245736980346,
+        "lon": -3.6414239673504993,
+        "comment": "Raul",
+        "road": "",
+        "time": "2026-10-07T11:31:35+00:00",
+        "votes": 1,
+        "source": "usuario"
+    },
+    {
+        "id": "rpt_6ac630c00a59c6.91646312",
+        "type": "obras",
+        "lat": 40,
+        "lon": -3.7,
+        "comment": "",
+        "road": "",
+        "time": "2026-10-07T11:45:04+00:00",
+        "votes": 1,
+        "source": "usuario"
+    }
+]
