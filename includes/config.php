@@ -29,8 +29,13 @@ define('OSRM_URL', 'http://router.project-osrm.org/route/v1/driving');
 define('OPENMETEO_URL', 'https://api.open-meteo.com/v1/forecast');
 
 // DGT — tráfico e incidencias
-define('DGT_INCIDENCIAS_URL', 'https://infocar.dgt.es/etraffic/BuscarIncidentes');
-define('DGT_RSS_URL', 'https://infocar.dgt.es/rss/incidencias.xml');
+// Incidencias en DATEX II (públicas, sin clave). Se prueba en este orden.
+if (!defined('DGT_DATEX_URLS')) {
+    define('DGT_DATEX_URLS', [
+        'https://nap.dgt.es/datex2/v3/dgt/SituationPublication/datex2_v36.xml',
+        'https://infocar.dgt.es/datex2/dgt/SituationPublication/all/content.xml',
+    ]);
+}
 
 // Ministerio de Industria — precios carburantes (datos oficiales, sin API key)
 define('FUEL_API_URL', 'https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/');

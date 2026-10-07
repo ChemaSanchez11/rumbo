@@ -22,6 +22,11 @@ let inRouteMode = false;
 let fuelType = 'gasolina';
 let fuelData = [];
 let lastNearbyLat = null, lastNearbyLon = null;
+let heading = null;          // rumbo actual en grados (0 = norte)
+let headingAngle = 0;        // ángulo acumulado para girar la flecha sin saltos
+let lastFix = null;          // última posición para estimar el rumbo
+let currentKmh = 0;
+let routeCoords = [];        // [[lat, lon], ...] de la ruta activa
 let toastTimer = null;
 let errorTimer = null;
 
@@ -236,7 +241,7 @@ function initEvents() {
         followMode = true;
         document.getElementById('centerBtn').setAttribute('aria-pressed', 'true');
         if (currentLat && currentLon) {
-            map.setView([currentLat, currentLon], 15, { animate: true });
+            followView(currentLat, currentLon, inRouteMode ? navZoom() : Math.max(map.getZoom(), 15));
         } else {
             showToast('Esperando señal de ubicación', 'gps-fix');
         }
@@ -357,9 +362,11 @@ function startGPSTracking() {
             const { latitude, longitude, speed } = pos.coords;
             currentLat = latitude;
             currentLon = longitude;
+            currentKmh = speed ? Math.round(speed * 3.6) : 0;
 
+            updateHeading(pos.coords);
             updateGpsMarker(latitude, longitude);
-            updateSpeedometer(speed ? Math.round(speed * 3.6) : 0);
+            updateSpeedometer(currentKmh);
 
             if (routeSteps.length) updateNavSign(latitude, longitude);
 
@@ -369,7 +376,7 @@ function startGPSTracking() {
                 map.flyTo([latitude, longitude], 15, { duration: 1.5 });
                 loadNearby(latitude, longitude);
             } else if (followMode) {
-                map.setView([latitude, longitude], map.getZoom(), { animate: true, duration: 0.5 });
+                followView(latitude, longitude, inRouteMode ? navZoom() : map.getZoom());
             }
 
             // Recargar avisos y gasolineras al moverse más de 3 km
@@ -394,11 +401,101 @@ function updateGpsMarker(lat, lon) {
     } else {
         const markerIcon = L.divIcon({
             className: '',
-            html: '<div class="gps-dot"></div>',
-            iconSize: [20, 20], iconAnchor: [10, 10]
+            html: `<div class="gps-marker">
+                <div class="gps-dot"></div>
+                <svg class="gps-arrow" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 4 L40 42 L24 33 L8 42 Z"/></svg>
+            </div>`,
+            iconSize: [48, 48], iconAnchor: [24, 24]
         });
-        gpsMarker = L.marker([lat, lon], { icon: markerIcon, zIndexOffset: 1000, keyboard: false }).addTo(map);
+        gpsMarker = L.marker([lat, lon], { icon: markerIcon, zIndexOffset: 1000, keyboard: false, interactive: false }).addTo(map);
     }
+    const el = gpsMarker.getElement()?.querySelector('.gps-marker');
+    if (!el) return;
+    el.classList.toggle('has-heading', heading !== null);
+    if (heading !== null) {
+        // Girar por el camino corto (de 350° a 10° son 20°, no 340°)
+        const delta = ((heading - headingAngle) % 360 + 540) % 360 - 180;
+        headingAngle += delta;
+        el.style.setProperty('--heading', `${headingAngle}deg`);
+    }
+}
+
+function bearingDeg(lat1, lon1, lat2, lon2) {
+    const toRad = Math.PI / 180;
+    const y = Math.sin((lon2 - lon1) * toRad) * Math.cos(lat2 * toRad);
+    const x = Math.cos(lat1 * toRad) * Math.sin(lat2 * toRad) -
+              Math.sin(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.cos((lon2 - lon1) * toRad);
+    return (Math.atan2(y, x) / toRad + 360) % 360;
+}
+
+/**
+ * Rumbo: el del GPS si vamos en marcha; si no, el del desplazamiento entre
+ * posiciones; parado en ruta, la dirección de la carretera por delante.
+ */
+function updateHeading(coords) {
+    const { latitude, longitude, speed } = coords;
+    const gpsHeading = coords.heading;
+    if (gpsHeading !== null && !isNaN(gpsHeading) && speed > 1.5) {
+        heading = gpsHeading;
+    } else if (lastFix && haversineKm(lastFix.lat, lastFix.lon, latitude, longitude) > 0.012) {
+        heading = bearingDeg(lastFix.lat, lastFix.lon, latitude, longitude);
+    } else if (heading === null && routeCoords.length) {
+        heading = routeBearingAt(latitude, longitude);
+    }
+    if (!lastFix || haversineKm(lastFix.lat, lastFix.lon, latitude, longitude) > 0.012) {
+        lastFix = { lat: latitude, lon: longitude };
+    }
+}
+
+function routeBearingAt(lat, lon) {
+    let best = 0, bestD = Infinity;
+    const step = Math.max(1, Math.floor(routeCoords.length / 400));
+    for (let i = 0; i < routeCoords.length; i += step) {
+        const d = haversineKm(lat, lon, routeCoords[i][0], routeCoords[i][1]);
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    const next = routeCoords[Math.min(best + Math.max(3, step), routeCoords.length - 1)];
+    if (!next || bestD > 0.5) return null;
+    return bearingDeg(routeCoords[best][0], routeCoords[best][1], next[0], next[1]);
+}
+
+/** Zoom de navegación: más cerca en ciudad, más lejos en autovía */
+function navZoom() {
+    if (currentKmh >= 90) return 15;
+    if (currentKmh >= 50) return 16;
+    return 17;
+}
+
+/**
+ * Centra el mapa en la posición dentro del hueco visible (entre la barra o el
+ * cartel y el panel) y, en ruta, la adelanta en la dirección de la marcha para
+ * ver más carretera por delante.
+ */
+function followView(lat, lon, zoom, animate = true) {
+    const size = map.getSize();
+    let top = 0, bottom = size.y, left = 0;
+    ['topBar', 'navSign'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el.classList.contains('hidden')) top = Math.max(top, el.getBoundingClientRect().bottom);
+    });
+    const sheet = document.getElementById('bottomSheet').getBoundingClientRect();
+    if (window.innerWidth >= 900) left = sheet.right;
+    else bottom = Math.min(bottom, sheet.top);
+    if (bottom - top < 160) { top = 0; bottom = size.y; }
+
+    let x = (left + size.x) / 2;
+    let y = (top + bottom) / 2;
+    if (inRouteMode && heading !== null) {
+        // Adelantar la posición, sin acercarla demasiado a los bordes
+        const aheadY = (bottom - top) * 0.28;
+        const aheadX = (size.x - left) * 0.25;
+        x -= Math.sin(heading * Math.PI / 180) * aheadX;
+        y += Math.cos(heading * Math.PI / 180) * aheadY;
+    }
+
+    const userPx = map.project([lat, lon], zoom);
+    const centerPx = userPx.add(L.point(size.x / 2 - x, size.y / 2 - y));
+    map.setView(map.unproject(centerPx, zoom), zoom, { animate, duration: 0.6 });
 }
 
 function updateSpeedometer(kmh) {
@@ -817,7 +914,8 @@ function enterRouteMode(oLat, oLon, routeData, weatherData) {
     inRouteMode = true;
     const myLat = currentLat || oLat;
     const myLon = currentLon || oLon;
-    map.setView([myLat, myLon], 15, { animate: true });
+    if (heading === null) heading = routeBearingAt(myLat, myLon);
+    if (currentLat && currentLon) updateGpsMarker(currentLat, currentLon);
 
     followMode = true;
     document.getElementById('centerBtn').setAttribute('aria-pressed', 'true');
@@ -862,6 +960,8 @@ function enterRouteMode(oLat, oLon, routeData, weatherData) {
     sign.classList.add('is-entering');
 
     updateFabsPosition(true);
+    // Encuadre de navegación cuando el panel ya está plegado
+    setTimeout(() => followView(myLat, myLon, navZoom()), 340);
 }
 
 function exitRouteMode() {
@@ -881,6 +981,7 @@ function exitRouteMode() {
     weatherLayer.clearLayers();
     warningsLayer.clearLayers();
     routeLines = [];
+    routeCoords = [];
     routeSteps = [];
     routeStartTime = null;
     if (etaTimer) { clearInterval(etaTimer); etaTimer = null; }
@@ -931,6 +1032,7 @@ function updateFabsPosition(inRoute) {
 function drawRoute(data, oLat, oLon, dLat, dLon) {
     routeLayer.clearLayers();
     const coords = data.geometry.coordinates.map(c => [c[1], c[0]]);
+    routeCoords = coords;
     const color = cssVar('--accent');
 
     routeLines = [

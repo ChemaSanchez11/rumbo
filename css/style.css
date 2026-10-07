@@ -926,6 +926,13 @@ input { caret-color: var(--accent); }
 .mk-origin { background: var(--accent); color: var(--accent-ink); }
 .mk-dest { background: var(--ink); color: var(--surface); }
 
+.gps-marker {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    display: grid;
+    place-items: center;
+}
 .gps-dot {
     position: relative;
     width: 20px;
@@ -942,6 +949,23 @@ input { caret-color: var(--accent); }
     background: var(--accent);
     opacity: 0;
 }
+/* Con rumbo conocido: flecha de navegación girada hacia la marcha */
+.gps-arrow {
+    position: absolute;
+    inset: 4px;
+    width: 40px;
+    height: 40px;
+    display: none;
+    fill: var(--accent);
+    stroke: #FFFFFF;
+    stroke-width: 3.5;
+    stroke-linejoin: round;
+    filter: drop-shadow(0 2px 4px rgba(20, 30, 50, 0.45));
+    transform: rotate(var(--heading, 0deg));
+    transition: transform 600ms var(--ease);
+}
+.gps-marker.has-heading .gps-arrow { display: block; }
+.gps-marker.has-heading .gps-dot { display: none; }
 
 /* ---------- Popups de Leaflet ---------- */
 .leaflet-container { font-family: var(--font); background: var(--surface-2); }

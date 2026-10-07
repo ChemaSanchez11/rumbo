@@ -179,17 +179,6 @@ if (file_exists($reportsFile)) {
     }
 }
 
-// 3. Avisos base de la red de carreteras española
-$knownWarnings = getWazeWarnings();
-foreach ($knownWarnings as $kw) {
-    $lat = $kw['lat'];
-    $lon = $kw['lon'];
-    if ($lat >= $south && $lat <= $north && $lon >= $west && $lon <= $east) {
-        $kw['source'] = $kw['source'] ?? 'Red de carreteras';
-        $warnings[] = $kw;
-    }
-}
-
 echo json_encode($warnings);
 
 // ===========================================================
@@ -234,144 +223,191 @@ function getTypeInfo(string $type): array {
     };
 }
 
+/**
+ * Incidencias oficiales de la DGT (DATEX II): obras, cortes, accidentes,
+ * retenciones, meteorología... Se guardan ya procesadas 5 minutos en caché.
+ */
 function fetchDGTData(): ?array {
+    $cacheFile = __DIR__ . '/../data/dgt_cache.json';
+    if (file_exists($cacheFile) && time() - filemtime($cacheFile) < 300) {
+        $cached = json_decode(file_get_contents($cacheFile), true);
+        if (is_array($cached)) return $cached;
+    }
+
     $ctx = stream_context_create([
         'http' => [
-            'timeout' => 6,
+            'timeout' => 25,
             'method'  => 'GET',
             'header'  => "User-Agent: Rumbo/1.0\r\nAccept: application/xml, text/xml\r\n"
         ]
     ]);
-    $xml = @file_get_contents(DGT_RSS_URL, false, $ctx);
-    if ($xml === false) return null;
-    $feed = @simplexml_load_string($xml);
-    if (!$feed) return null;
-    $results = [];
-    foreach ($feed->channel->item ?? [] as $item) {
-        $title = (string)($item->title ?? '');
-        $desc  = (string)($item->description ?? '');
-        $link  = (string)($item->link ?? '');
-        $coords = extractCoords($link . ' ' . $desc);
-        if ($coords) {
-            $results[] = [
-                'titulo' => $title, 'detalle' => $desc,
-                'lat' => $coords['lat'], 'lon' => $coords['lon'],
-                'tipo' => guessType($title . ' ' . $desc),
-                'carretera' => extractRoad($title),
-                'nivel' => guessSeverity($title . ' ' . $desc)
-            ];
-        }
-    }
-    return empty($results) ? null : $results;
-}
 
-function extractCoords(string $text): ?array {
-    if (preg_match('/(-?\d+\.\d+)\s*[,]\s*(-?\d+\.\d+)/', $text, $m))
-        return ['lat' => floatval($m[1]), 'lon' => floatval($m[2])];
-    if (preg_match('/[?&](?:lat|y)=(-?\d+\.\d+).*?[?&](?:lon|lng|x)=(-?\d+\.\d+)/', $text, $m))
-        return ['lat' => floatval($m[1]), 'lon' => floatval($m[2])];
+    $results = null;
+    foreach (DGT_DATEX_URLS as $url) {
+        $xml = @file_get_contents($url, false, $ctx);
+        if ($xml === false || strlen($xml) < 200) continue;
+        $results = parseDatex($xml);
+        if ($results !== null) break;
+    }
+
+    if ($results !== null) {
+        $dir = dirname($cacheFile);
+        if (!is_dir($dir)) mkdir($dir, 0755, true);
+        file_put_contents($cacheFile, json_encode($results, JSON_UNESCAPED_UNICODE));
+        return $results;
+    }
+
+    // Si la DGT no responde, mejor datos algo antiguos que ninguno
+    if (file_exists($cacheFile)) {
+        $cached = json_decode(file_get_contents($cacheFile), true);
+        if (is_array($cached)) return $cached;
+    }
     return null;
 }
 
-function guessType(string $t): string {
-    $t = mb_strtolower($t);
-    foreach (['obra'=>'obras','accidente'=>'accidente','corte'=>'corte','nieve'=>'nieve','inundaci'=>'inundacion','viento'=>'viento','desliz'=>'desprendimiento'] as $k=>$v)
-        if (str_contains($t, $k)) return $v;
-    return 'incidencia';
+/**
+ * Lee un documento DATEX II (v1 de infocar o v3 del Punto de Acceso Nacional)
+ * sin depender de los prefijos de espacio de nombres.
+ */
+function parseDatex(string $xml): ?array {
+    $reader = new XMLReader();
+    if (!@$reader->XML($xml, null, LIBXML_NONET | LIBXML_COMPACT)) return null;
+
+    $results = [];
+    $found = false;
+    $situationSeverity = '';
+    while (@$reader->read()) {
+        if ($reader->nodeType !== XMLReader::ELEMENT) continue;
+        // En DATEX II v3 la gravedad va en la situación, fuera de cada registro
+        if ($reader->localName === 'situation') { $situationSeverity = ''; continue; }
+        if ($reader->localName === 'overallSeverity') { $situationSeverity = trim($reader->readString()); continue; }
+        if ($reader->localName !== 'situationRecord') continue;
+        $found = true;
+        $node = $reader->expand();
+        if (!$node) continue;
+
+        $doc = new DOMDocument();
+        $doc->appendChild($doc->importNode($node, true));
+        $xp = new DOMXPath($doc);
+        $text = function (string $names) use ($xp): string {
+            $q = implode(' or ', array_map(fn($n) => "local-name()='$n'", explode('|', $names)));
+            $n = $xp->query("//*[$q]")->item(0);
+            return $n ? trim($n->textContent) : '';
+        };
+
+        if (strtolower($text('validityStatus')) === 'suspended') continue;
+
+        $lat = floatval($text('latitude'));
+        $lon = floatval($text('longitude'));
+        if (!$lat || !$lon) continue;
+
+        $root = $doc->documentElement;
+        $xsiType = $root->getAttributeNS('http://www.w3.org/2001/XMLSchema-instance', 'type');
+        $xsiType = preg_replace('/^.*:/', '', $xsiType);
+        $subtype = $text('roadMaintenanceType|constructionWorkType|accidentType|abnormalTrafficType|vehicleObstructionType|obstructionType|environmentalObstructionType|animalPresenceType|poorEnvironmentType|weatherRelatedRoadConditionType|roadOrCarriagewayOrLaneManagementType|networkManagementType|complianceOption');
+
+        // Carretera: número de vía (v3) o descriptores con el nombre del tramo (v1)
+        $road = $text('roadNumber');
+        if ($road === '') {
+            $descriptors = [];
+            foreach ($xp->query("//*[local-name()='value']") as $v) $descriptors[] = $v->textContent;
+            $road = extractRoad(implode(' ', $descriptors));
+        }
+
+        $type = datexType($xsiType, $subtype);
+        $comment = $text('generalPublicComment');
+        $results[] = [
+            'titulo'    => getTypeInfo($type)['title'],
+            'detalle'   => $comment !== '' ? mb_substr($comment, 0, 200) : datexSubtypeText($subtype),
+            'lat'       => round($lat, 5),
+            'lon'       => round($lon, 5),
+            'tipo'      => $type,
+            'carretera' => $road,
+            'nivel'     => $text('overallSeverity|severity') ?: $situationSeverity,
+        ];
+    }
+    $reader->close();
+
+    return $found ? $results : null;
 }
 
-function guessSeverity(string $t): string {
-    $t = mb_strtolower($t);
-    if (str_contains($t,'cortado')||str_contains($t,'cerrado')) return 'high';
-    if (str_contains($t,'restringido')||str_contains($t,'limitad')) return 'medium';
-    return 'low';
+function datexType(string $xsiType, string $subtype): string {
+    $sub = strtolower($subtype);
+    switch ($xsiType) {
+        case 'MaintenanceWorks':
+        case 'ConstructionWorks':
+        case 'Roadworks':
+            return 'obras';
+        case 'Accident':
+            return 'accidente';
+        case 'AbnormalTraffic':
+            return 'trafico';
+        case 'VehicleObstruction':
+            return 'vehiculo_parado';
+        case 'AnimalPresenceObstruction':
+            return 'animales';
+        case 'EnvironmentalObstruction':
+            if (str_contains($sub, 'flood')) return 'inundacion';
+            if (str_contains($sub, 'rock') || str_contains($sub, 'slide') || str_contains($sub, 'avalanche')) return 'desprendimiento';
+            return 'peligro';
+        case 'PoorEnvironmentConditions':
+        case 'WeatherRelatedRoadConditions':
+            if (str_contains($sub, 'snow') || str_contains($sub, 'ice') || str_contains($sub, 'frost')) return 'nieve';
+            if (str_contains($sub, 'wind') || str_contains($sub, 'gust')) return 'viento';
+            if (str_contains($sub, 'flood')) return 'inundacion';
+            return 'peligro';
+        case 'RoadOrCarriagewayOrLaneManagement':
+        case 'NetworkManagement':
+        case 'ReroutingManagement':
+            if (str_contains($sub, 'closed') || str_contains($sub, 'closure')) return 'corte';
+            if (str_contains($sub, 'snow') || str_contains($sub, 'chain')) return 'nieve';
+            return 'peligro';
+        default:
+            return 'incidencia';
+    }
+}
+
+function datexSubtypeText(string $subtype): string {
+    $map = [
+        'roadworks' => 'Obras en la calzada',
+        'resurfacingWork' => 'Trabajos de asfaltado',
+        'maintenanceWork' => 'Trabajos de mantenimiento',
+        'roadMarkingWork' => 'Pintado de marcas viales',
+        'overheadWorks' => 'Trabajos en altura',
+        'repairWork' => 'Reparaciones en la vía',
+        'emergencyRepairWork' => 'Reparación urgente',
+        'stationaryTraffic' => 'Tráfico detenido',
+        'queuingTraffic' => 'Retención',
+        'slowTraffic' => 'Circulación lenta',
+        'heavyTraffic' => 'Tráfico denso',
+        'roadClosed' => 'Carretera cortada',
+        'laneClosures' => 'Carriles cortados',
+        'carriagewayClosures' => 'Calzada cortada',
+        'singleAlternateLineTraffic' => 'Paso alternativo',
+        'contraflow' => 'Circulación en sentido contrario por obras',
+        'narrowLanes' => 'Carriles estrechos',
+        'snowChainsMandatory' => 'Cadenas obligatorias',
+        'snowOnTheRoad' => 'Nieve en la calzada',
+        'ice' => 'Hielo en la calzada',
+        'fog' => 'Niebla',
+        'strongWinds' => 'Viento fuerte',
+        'flooding' => 'Calzada inundada',
+        'rockfalls' => 'Caída de piedras',
+        'brokenDownVehicle' => 'Vehículo averiado',
+        'accident' => 'Accidente',
+    ];
+    return $map[$subtype] ?? '';
 }
 
 function extractRoad(string $t): string {
-    return preg_match('/((?:A|AP|N|R)\s*-?\s*\d+[A-Z]?)/i', $t, $m) ? trim($m[1]) : '';
+    return preg_match('/\b([A-Z]{1,3}-?\d{1,4}[A-Z]?)\b/', mb_strtoupper($t), $m) ? $m[1] : '';
 }
 
 function mapDGTSeverity(string $n): string {
     return match(mb_strtolower($n)) {
-        'alto','high','rojo'=>'danger','medio','medium','naranja'=>'warning', default=>'caution'
+        'highest', 'high', 'alto', 'rojo' => 'danger',
+        'medium', 'medio', 'naranja'      => 'warning',
+        'low', 'lowest', 'bajo', 'amarillo' => 'caution',
+        default                           => ''   // sin dato: la gravedad propia del tipo
     };
-}
-
-/**
- * Base de avisos estilo Waze para las carreteras españolas
- * Incluye: policía, accidentes, peligros, tráfico, radares, vehículos parados...
- */
-function getWazeWarnings(): array {
-    return [
-        // --- POLICÍA ---
-        ['type'=>'policia','title'=>'Control policial','detail'=>'Control de alcoholemia y documentación','road'=>'M-30','lat'=>40.4368,'lon'=>-3.6910,'severity'=>'caution'],
-        ['type'=>'policia','title'=>'Policía Nacional','detail'=>'Radar móvil en el arcén','road'=>'A-42','lat'=>40.18,'lon'=>-3.72,'severity'=>'caution'],
-        ['type'=>'policia','title'=>'Guardia Civil','detail'=>'Control de velocidad en km 23','road'=>'N-IV','lat'=>37.52,'lon'=>-4.75,'severity'=>'caution'],
-        ['type'=>'policia','title'=>'Radar móvil','detail'=>'Policía con radar en medianera','road'=>'AP-7','lat'=>39.47,'lon'=>-0.38,'severity'=>'caution'],
-        ['type'=>'policia','title'=>'Control policial','detail'=>'Control de peso para camiones','road'=>'A-1','lat'=>42.58,'lon'=>-2.85,'severity'=>'caution'],
-        ['type'=>'policia','title'=>'Guardia Civil Tráfico','detail'=>'Control de tráfico en peaje','road'=>'AP-1','lat'=>42.70,'lon'=>-2.69,'severity'=>'caution'],
-
-        // --- ACCIDENTES ---
-        ['type'=>'accidente','title'=>'Accidente múltiple','detail'=>'Colisión de 3 vehículos. Ocupa el carril izquierdo','road'=>'A-6','lat'=>40.55,'lon'=>-3.78,'severity'=>'danger'],
-        ['type'=>'accidente','title'=>'Salida de vía','detail'=>'Vehículo fuera de la calzada. Precaución','road'=>'N-340','lat'=>41.11,'lon'=>1.11,'severity'=>'warning'],
-        ['type'=>'accidente','title'=>'Choque por alcance','detail'=>'Dos vehículos implicados, carril derecho bloqueado','road'=>'M-40','lat'=>40.41,'lon'=>-3.63,'severity'=>'danger'],
-        ['type'=>'accidente','title'=>'Volcamiento','detail'=>'Camión volcado. Desvío obligatorio','road'=>'A-4','lat'=>38.42,'lon'=>-3.53,'severity'=>'danger'],
-        ['type'=>'accidente','title'=>'Accidente leve','detail'=>'Toque entre vehículos. Movilidad reducida','road'=>'B-10','lat'=>41.36,'lon'=>2.17,'severity'=>'warning'],
-
-        // --- PELIGROS EN LA VÍA ---
-        ['type'=>'peligro','title'=>'Objeto en la calzada','detail'=>'Neumático en el carril central','road'=>'A-3','lat'=>39.22,'lon'=>-1.85,'severity'=>'warning'],
-        ['type'=>'peligro','title'=>'Bache peligroso','detail'=>'Bache de gran tamaño en el carril derecho','road'=>'N-1','lat'=>42.35,'lon'=>-3.12,'severity'=>'warning'],
-        ['type'=>'peligro','title'=>'Aceite en la calzada','detail'=>'Mancha de aceite en curva. Reducir velocidad','road'=>'A-2','lat'=>41.52,'lon'=>-0.55,'severity'=>'warning'],
-        ['type'=>'peligro','title'=>'Gris mojado','detail'=>'Pavimento resbaladizo por lluvia reciente','road'=>'AP-6','lat'=>40.72,'lon'=>-4.18,'severity'=>'caution'],
-        ['type'=>'peligro','title'=>'Animales sueltos','detail'=>'Jabalíes cruzando la carretera','road'=>'N-234','lat'=>40.88,'lon'=>-1.45,'severity'=>'warning'],
-        ['type'=>'peligro','title'=>'Visibilidad reducida','detail'=>'Niebla espesa. Encender antiniebla','road'=>'A-8','lat'=>43.38,'lon'=>-5.84,'severity'=>'warning'],
-        ['type'=>'peligro','title'=>'Hielo en calzada','detail'=>'Temperaturas bajo cero. Posible hielo negro','road'=>'N-625','lat'=>42.95,'lon'=>-5.75,'severity'=>'danger'],
-
-        // --- OBRAS ---
-        ['type'=>'obras','title'=>'Obras en A-6','detail'=>'Tramo con reducción de velocidad entre km 45-52','road'=>'A-6','lat'=>42.88,'lon'=>-8.55,'severity'=>'warning'],
-        ['type'=>'obras','title'=>'Mejora firme AP-7','detail'=>'Obras de mantenimiento. Carril derecho cortado','road'=>'AP-7','lat'=>41.12,'lon'=>1.25,'severity'=>'caution'],
-        ['type'=>'obras','title'=>'Ampliación autovía','detail'=>'Obras de ampliación. Velocidad reducida a 80 km/h','road'=>'A-44','lat'=>37.78,'lon'=>-3.78,'severity'=>'caution'],
-        ['type'=>'obras','title'=>'Paso elevado en construcción','detail'=>'Obras de paso superior. Estrechamiento','road'=>'A-5','lat'=>39.55,'lon'=>-6.38,'severity'=>'caution'],
-        ['type'=>'obras','title'=>'Renovación firme','detail'=>'Fresado de firme. Superficie irregular','road'=>'N-121','lat'=>42.82,'lon'=>-1.65,'severity'=>'caution'],
-
-        // --- TRÁFICO / ATASCOS ---
-        ['type'=>'trafico','title'=>'Retención importante','detail'=>'Atasco de más de 3 km. Aprox. 30 min de espera','road'=>'M-40','lat'=>40.45,'lon'=>-3.62,'severity'=>'warning'],
-        ['type'=>'trafico','title'=>'Tráfico denso','detail'=>'Flujo muy lento por concentración de vehículos','road'=>'B-23','lat'=>41.39,'lon'=>2.08,'severity'=>'caution'],
-        ['type'=>'trafico','title'=>'Retención km 12','detail'=>'Cola de tráfico. Avance a paso','road'=>'A-2','lat'=>41.48,'lon'=>-0.42,'severity'=>'warning'],
-        ['type'=>'trafico','title'=>'Atasco en peaje','detail'=>'Cola de 20 min en caseta de peaje','road'=>'AP-7','lat'=>41.52,'lon'=>2.02,'severity'=>'caution'],
-        ['type'=>'trafico','title'=>'Tráfico pesado','detail'=>'Gran concentración de camiones. Adelantar con cuidado','road'=>'A-1','lat'=>41.08,'lon'=>-3.52,'severity'=>'caution'],
-
-        // --- VEHÍCULOS PARADOS ---
-        ['type'=>'vehiculo_parado','title'=>'Vehículo avariado','detail'=>'Turismo parado en el arcén derecho','road'=>'A-42','lat'=>40.05,'lon'=>-3.60,'severity'=>'caution'],
-        ['type'=>'vehiculo_parado','title'=>'Camión averiado','detail'=>'Camión de gran tonelada detenido. Ocupa parte del carril','road'=>'A-3','lat'=>39.08,'lon'=>-2.12,'severity'=>'warning'],
-        ['type'=>'vehiculo_parado','title'=>'Furgoneta en arcén','detail'=>'Furgoneta con avería. Triángulos colocados','road'=>'N-340','lat'=>36.72,'lon'=>-4.42,'severity'=>'caution'],
-        ['type'=>'vehiculo_parado','title'=>'Vehículo siniestrado','detail'=>'Coche accidentado en la cuneta','road'=>'A-7','lat'=>37.18,'lon'=>-3.62,'severity'=>'caution'],
-
-        // --- RADARES ---
-        ['type'=>'radar','title'=>'Radar fijo','detail'=>'Control de velocidad fijo. Límite 120 km/h','road'=>'A-1','lat'=>40.95,'lon'=>-3.62,'severity'=>'caution'],
-        ['type'=>'radar','title'=>'Radar fijo','detail'=>'Radar de tramo. Velocidad media controlada','road'=>'AP-7','lat'=>41.82,'lon'=>1.85,'severity'=>'caution'],
-        ['type'=>'radar','title'=>'Radar','detail'=>'Límite 100 km/h. Control de velocidad','road'=>'M-40','lat'=>40.48,'lon'=>-3.72,'severity'=>'caution'],
-        ['type'=>'radar','title'=>'Radar fijo','detail'=>'Radar en bajada. Límite 80 km/h','road'=>'A-66','lat'=>37.98,'lon'=>-5.95,'severity'=>'caution'],
-        ['type'=>'radar','title'=>'Radar de tramo','detail'=>'Control de velocidad media. 2 km de recorrido','road'=>'A-5','lat'=>39.38,'lon'=>-6.15,'severity'=>'caution'],
-
-        // --- NIEVE / CLIMA ---
-        ['type'=>'nieve','title'=>'Cadenas obligatorias','detail'=>'Cadenas obligatorias por encima de 1200m','road'=>'N-623','lat'=>43.02,'lon'=>-3.72,'severity'=>'danger'],
-        ['type'=>'nieve','title'=>'Nieve en la vía','detail'=>'Capa de nieve de 5 cm. Circular con precaución','road'=>'A-1','lat'=>41.13,'lon'=>-3.58,'severity'=>'danger'],
-        ['type'=>'viento','title'=>'Viento lateral','detail'=>'Rachas de hasta 90 km/h. Precaución con vehículos altos','road'=>'N-260','lat'=>42.55,'lon'=>1.52,'severity'=>'warning'],
-        ['type'=>'viento','title'=>'Viento fuerte','detail'=>'Temporal de viento. Restricción para caravanas','road'=>'AP-8','lat'=>43.30,'lon'=>-2.12,'severity'=>'warning'],
-
-        // --- INUNDACIONES ---
-        ['type'=>'inundacion','title'=>'Vía inundada','detail'=>'Calzada cubierta por agua. No atravesar','road'=>'CV-60','lat'=>39.18,'lon'=>-0.42,'severity'=>'danger'],
-
-        // --- PEATONES / CICLISTAS ---
-        ['type'=>'peaton','title'=>'Peatón en la vía','detail'=>'Persona caminando por el arcén sin chaleco','road'=>'N-332','lat'=>38.05,'lon'=>-0.72,'severity'=>'warning'],
-        ['type'=>'bicicleta','title'=>'Grupo de ciclistas','detail'=>'Pelotón de 15 ciclistas. Adelantar con 1.5m','road'=>'GI-682','lat'=>41.95,'lon'=>3.05,'severity'=>'caution'],
-
-        // --- PUNTOS NEGROS CONOCIDOS ---
-        ['type'=>'peligro','title'=>'Puerto de Somosierra','detail'=>'Tramo de montaña. Cadenas recomendables en invierno','road'=>'N-1','lat'=>41.13,'lon'=>-3.58,'severity'=>'caution','source'=>'Red de carreteras'],
-        ['type'=>'peligro','title'=>'Puerto de León','detail'=>'Pendiente del 6%. Precaución con pesados','road'=>'AP-68','lat'=>42.42,'lon'=>-2.73,'severity'=>'caution','source'=>'Red de carreteras'],
-        ['type'=>'peligro','title'=>'Desfiladero de la Hermida','detail'=>'Carretera estrecha junto al río. Derrumbes','road'=>'N-621','lat'=>43.15,'lon'=>-4.65,'severity'=>'warning','source'=>'Red de carreteras'],
-        ['type'=>'peligro','title'=>'Desierto de Tabernas','detail'=>'Temperaturas extremas en verano. Llevar agua','road'=>'A-92','lat'=>37.02,'lon'=>-2.42,'severity'=>'caution','source'=>'Red de carreteras'],
-        ['type'=>'peligro','title'=>'Curvas peligrosas','detail'=>'Tramo con 12 curvas cerradas sucesivas','road'=>'CA-282','lat'=>43.22,'lon'=>-4.42,'severity'=>'warning','source'=>'Red de carreteras'],
-    ];
 }
