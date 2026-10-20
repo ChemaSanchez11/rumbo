@@ -49,6 +49,8 @@ jobs:
           rsync -az --delete \
             --exclude='.git/' \
             --exclude='.github/' \
+            --exclude='.claude-plugin/' \
+            --exclude='plugins/' \
             --exclude='data/' \
             -e "ssh -i ~/.ssh/id_deploy -p $SSH_PORT" \
             ./ "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/"

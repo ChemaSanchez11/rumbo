@@ -1,0 +1,16 @@
+{
+  "name": "rumbo-plugins",
+  "owner": {
+    "name": "Chema Sánchez"
+  },
+  "metadata": {
+    "description": "Plugins de Claude Code del proyecto Rumbo."
+  },
+  "plugins": [
+    {
+      "name": "orquesta",
+      "source": "./plugins/orquesta",
+      "description": "Equipo de subagentes que reparte cada tarea al modelo adecuado: Sonnet analiza y documenta, Opus diseña y programa, Haiku ejecuta comandos y sube a git."
+    }
+  ]
+}

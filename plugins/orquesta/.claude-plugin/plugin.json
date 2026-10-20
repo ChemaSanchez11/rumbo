@@ -1,0 +1,7 @@
+{
+  "name": "orquesta",
+  "version": "1.0.0",
+  "description": "Equipo de subagentes que reparte cada tarea al modelo adecuado: Sonnet analiza y documenta, Opus diseña y programa, Haiku ejecuta comandos y sube a git.",
+  "author": { "name": "Chema Sánchez" },
+  "keywords": ["subagentes", "multimodelo", "sonnet", "opus", "haiku", "orquestación"]
+}
